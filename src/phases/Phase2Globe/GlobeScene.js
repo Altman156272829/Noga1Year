@@ -1,65 +1,101 @@
 /**
  * GlobeScene.js — Imperative Three.js scene for Phase 2.
  *
- * The scene renders:
- *   • Named dots (Points geometry with a canvas-generated glow sprite)
- *   • Connection lines between dots (LineSegments with additive blending)
- *   • A burst cloud of many extra tiny dots for the final burst
- *
- * All positioning is done in world space; the globeSequence.js GSAP
- * timeline calls the public API here.
+ * Renders:
+ *   • Named dots (11 individual Points meshes, PointsMaterial, sizeAttenuation)
+ *   • Connection lines (LineSegments, additive blending)
+ *   • Burst dots — a single Points mesh backed by a pre-allocated BufferGeometry
+ *     with a per-vertex aOpacity attribute and a ShaderMaterial. One draw call
+ *     for all 1000 burst dots regardless of how many are active.
  *
  * Public API:
- *   scene.mount(canvas)             — attach renderer to canvas element
- *   scene.dispose()                 — clean up WebGL resources
- *   scene.spawnDotAtScreenCenter()  — place a dot at world origin (0,0,0), opacity 0
- *   scene.flyDotTo(index, pos)      — GSAP-animate dot[index] to world pos
- *   scene.showLabel(index, title)   — (DOM, delegated to Phase2Globe.jsx)
- *   scene.connect(a, b)             — add a line between two dot indices
- *   scene.setDotOpacity(i, v)       — for GSAP tween targets
- *   scene.setLineOpacity(i, v)      — for line fade-in tweens
- *   scene.getDotPosition(i)         — returns THREE.Vector3
- *   scene.projectToScreen(v3)       — world → screen {x, y} in pixels
- *   scene.spawnBurstDot(pos)        — add an extra burst dot
- *   scene.rotateGroup(angle)        — set Y-rotation of the whole globe group
+ *   mount(canvas)              attach renderer; starts RAF loop
+ *   dispose()                  clean up all WebGL resources
+ *   spawnDotAtScreenCenter()   place a named dot at origin, opacity 0; returns index
+ *   setDotWorldPos(i,x,y,z)    move named dot i to world position
+ *   setDotOpacity(i,v)         set named dot i's opacity
+ *   getDotPosition(i)          returns THREE.Vector3
+ *   projectToScreen(v3)        world → screen {x,y} pixels
+ *   connect(a,b)               add a glowing line between two named dot indices
+ *   setLineOpacity(i,v)        set line i opacity
+ *   initBurstSystem(count)     pre-allocate the burst buffer for 'count' dots
+ *   setBurstDotPos(i,x,y,z)    write burst dot i's position into the buffer
+ *   setBurstDotOpacity(i,v)    write burst dot i's opacity into the buffer
+ *   setCameraZ(z)              animate camera pullback (zoom-out)
+ *   setNamedDotSize(s)         shrink all named dot materials' size uniform
+ *   rotateGroup(angle)         set Y-rotation of the whole globe group
  */
 
 import * as THREE from 'three'
 
 // ── Glow sprite texture ────────────────────────────────────────────────────
 
-function createGlowTexture(color = '#C8A96E', size = 64) {
+function createGlowTexture(size = 64) {
   const canvas = document.createElement('canvas')
   canvas.width  = size
   canvas.height = size
   const ctx = canvas.getContext('2d')
-
-  const cx = size / 2
-  const r  = size / 2
+  const cx  = size / 2
+  const r   = size / 2
   const grad = ctx.createRadialGradient(cx, cx, 0, cx, cx, r)
-  grad.addColorStop(0,    color)
-  grad.addColorStop(0.3,  color)
-  grad.addColorStop(0.7,  color.replace(')', ', 0.4)').replace('rgb', 'rgba'))
-  grad.addColorStop(1,    'transparent')
-
+  grad.addColorStop(0,   '#E8C97E')
+  grad.addColorStop(0.3, '#E8C97E')
+  grad.addColorStop(0.7, 'rgba(200,169,110,0.4)')
+  grad.addColorStop(1,   'rgba(0,0,0,0)')
   ctx.fillStyle = grad
   ctx.fillRect(0, 0, size, size)
   return new THREE.CanvasTexture(canvas)
 }
 
+// ── Burst shader (handles per-vertex opacity for 1000 dots in one draw call) ──
+
+const BURST_VERT = /* glsl */`
+  attribute float aOpacity;
+  varying   float vOpacity;
+  uniform   float uSize;
+
+  void main() {
+    vOpacity = aOpacity;
+    vec4 mv  = modelViewMatrix * vec4(position, 1.0);
+    // Perspective-correct sizing — matches the feel of PointsMaterial sizeAttenuation
+    gl_PointSize = uSize * (300.0 / -mv.z);
+    gl_Position  = projectionMatrix * mv;
+  }
+`
+
+const BURST_FRAG = /* glsl */`
+  uniform sampler2D uTexture;
+  varying float     vOpacity;
+
+  void main() {
+    vec4 c = texture2D(uTexture, gl_PointCoord);
+    float a = c.a * vOpacity;
+    if (a < 0.005) discard;
+    gl_FragColor = vec4(c.rgb, a);
+  }
+`
+
 // ── Scene class ────────────────────────────────────────────────────────────
 
 export default class GlobeScene {
   constructor() {
-    this._renderer   = null
-    this._scene      = null
-    this._camera     = null
-    this._group      = null        // all globe content lives here
-    this._rafId      = null
+    this._renderer  = null
+    this._scene     = null
+    this._camera    = null
+    this._group     = null
+    this._rafId     = null
 
-    this._dotMeshes  = []          // { mesh, position: THREE.Vector3, opacity: proxy }
-    this._lines      = []          // { mesh, opacity: proxy }
-    this._glowTex    = null
+    this._dotMeshes = []   // { mesh: Points, pos3: Vector3 }
+    this._lines     = []   // { mesh: LineSegments }
+    this._glowTex   = null
+
+    // Burst system
+    this._burstGeo      = null
+    this._burstPositions = null   // Float32Array (count * 3)
+    this._burstOpacities = null   // Float32Array (count)
+    this._burstMat      = null
+    this._burstMesh     = null
+    this._burstActive   = false
 
     this._width  = 0
     this._height = 0
@@ -69,37 +105,32 @@ export default class GlobeScene {
   // ── Setup ────────────────────────────────────────────────────────────────
 
   mount(canvas) {
-    this._glowTex = createGlowTexture('#E8C97E', 64)
+    this._glowTex = createGlowTexture(64)
 
-    // Renderer
-    this._renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: true,
-      alpha: true,
-    })
+    this._renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
     this._renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this._renderer.setClearColor(0x000000, 0)
 
-    // Scene
     this._scene = new THREE.Scene()
 
-    // Camera — slight downward tilt so the globe reads like a "world"
-    this._camera = new THREE.PerspectiveCamera(55, 1, 0.1, 100)
+    this._camera = new THREE.PerspectiveCamera(55, 1, 0.1, 200)
     this._camera.position.set(0, 0.5, 6)
     this._camera.lookAt(0, 0, 0)
 
-    // Group that rotates
     this._group = new THREE.Group()
     this._scene.add(this._group)
 
-    // Size
     this._resize(canvas)
     this._resizeObserver = new ResizeObserver(() => this._resize(canvas))
     this._resizeObserver.observe(canvas)
 
-    // Render loop
     const tick = () => {
       this._rafId = requestAnimationFrame(tick)
+      // Re-upload burst buffers every frame while burst is active (cheap: ~16 KB)
+      if (this._burstActive && this._burstGeo) {
+        this._burstGeo.attributes.position.needsUpdate = true
+        this._burstGeo.attributes.aOpacity.needsUpdate = true
+      }
       this._renderer.render(this._scene, this._camera)
     }
     tick()
@@ -127,19 +158,17 @@ export default class GlobeScene {
       mesh.material.dispose()
       this._group.remove(mesh)
     })
+    if (this._burstGeo)  { this._burstGeo.dispose() }
+    if (this._burstMat)  { this._burstMat.dispose()  }
+    if (this._burstMesh) { this._group.remove(this._burstMesh) }
     this._renderer?.dispose()
   }
 
-  // ── Dot API ──────────────────────────────────────────────────────────────
+  // ── Named dot API ────────────────────────────────────────────────────────
 
-  /**
-   * Create a dot at world origin (0,0,0), initially invisible.
-   * Returns the dot index.
-   */
   spawnDotAtScreenCenter() {
-    const geo  = new THREE.BufferGeometry()
-    const pos  = new Float32Array([0, 0, 0])
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 3))
 
     const mat = new THREE.PointsMaterial({
       size:            0.22,
@@ -153,16 +182,10 @@ export default class GlobeScene {
 
     const mesh = new THREE.Points(geo, mat)
     this._group.add(mesh)
-
-    const dotObj = {
-      mesh,
-      pos3: new THREE.Vector3(0, 0, 0),
-    }
-    this._dotMeshes.push(dotObj)
+    this._dotMeshes.push({ mesh, pos3: new THREE.Vector3() })
     return this._dotMeshes.length - 1
   }
 
-  /** Move dot[i] to world position [x,y,z] */
   setDotWorldPos(i, x, y, z) {
     const d = this._dotMeshes[i]
     if (!d) return
@@ -172,12 +195,6 @@ export default class GlobeScene {
     d.mesh.geometry.attributes.position.needsUpdate = true
   }
 
-  /** Get a dot's current opacity (for GSAP getter) */
-  getDotOpacity(i) {
-    return this._dotMeshes[i]?.mesh.material.opacity ?? 0
-  }
-
-  /** Set a dot's opacity (called by GSAP) */
   setDotOpacity(i, v) {
     if (this._dotMeshes[i]) this._dotMeshes[i].mesh.material.opacity = v
   }
@@ -186,30 +203,30 @@ export default class GlobeScene {
     return this._dotMeshes[i]?.pos3 ?? new THREE.Vector3()
   }
 
-  /** Project a Three.js Vector3 to screen pixel coords */
+  /** Shrink all named dot materials' size — used during the burst zoom-out. */
+  setNamedDotSize(s) {
+    this._dotMeshes.forEach(({ mesh }) => { mesh.material.size = s })
+  }
+
   projectToScreen(v3) {
     if (!this._camera || !this._width) return { x: 0, y: 0 }
     const p = v3.clone().applyMatrix4(this._group.matrixWorld)
     p.project(this._camera)
     return {
-      x: (p.x * 0.5 + 0.5) * this._width,
+      x: ( p.x * 0.5 + 0.5) * this._width,
       y: (-p.y * 0.5 + 0.5) * this._height,
     }
   }
 
   // ── Connection lines ─────────────────────────────────────────────────────
 
-  /**
-   * Draw a connection line between dot[a] and dot[b].
-   * Returns the line index.
-   */
   connect(a, b) {
     const pA = this._dotMeshes[a]?.pos3 ?? new THREE.Vector3()
     const pB = this._dotMeshes[b]?.pos3 ?? new THREE.Vector3()
 
-    const pts = [pA.x, pA.y, pA.z, pB.x, pB.y, pB.z]
     const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3))
+    geo.setAttribute('position', new THREE.BufferAttribute(
+      new Float32Array([pA.x, pA.y, pA.z, pB.x, pB.y, pB.z]), 3))
 
     const mat = new THREE.LineBasicMaterial({
       color:       0xC8A96E,
@@ -221,50 +238,82 @@ export default class GlobeScene {
 
     const mesh = new THREE.LineSegments(geo, mat)
     this._group.add(mesh)
-
-    const lineObj = { mesh, a, b }
-    this._lines.push(lineObj)
+    this._lines.push({ mesh })
     return this._lines.length - 1
-  }
-
-  getLineOpacity(i) {
-    return this._lines[i]?.mesh.material.opacity ?? 0
   }
 
   setLineOpacity(i, v) {
     if (this._lines[i]) this._lines[i].mesh.material.opacity = v
   }
 
-  // ── Burst ────────────────────────────────────────────────────────────────
+  // ── Burst system (single draw call for 1000 dots) ────────────────────────
 
   /**
-   * Spawn a tiny burst dot at a given world position (initially at origin).
-   * Returns its index so GSAP can tween it.
+   * Pre-allocate a BufferGeometry for `count` burst dots.
+   * All start at origin (0,0,0) with opacity 0.
+   * Must be called before any setBurstDot* calls.
    */
-  spawnBurstDot() {
-    const geo  = new THREE.BufferGeometry()
-    const pos  = new Float32Array([0, 0, 0])
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+  initBurstSystem(count) {
+    const positions = new Float32Array(count * 3)  // all (0,0,0)
+    const opacities = new Float32Array(count)       // all 0
 
-    const mat = new THREE.PointsMaterial({
-      size:            0.10,
-      map:             this._glowTex,
-      transparent:     true,
-      opacity:         0,
-      depthWrite:      false,
-      blending:        THREE.AdditiveBlending,
-      sizeAttenuation: true,
+    const geo = new THREE.BufferGeometry()
+
+    const posAttr = new THREE.BufferAttribute(positions, 3)
+    const opAttr  = new THREE.BufferAttribute(opacities, 1)
+    posAttr.setUsage(THREE.DynamicDrawUsage)
+    opAttr.setUsage(THREE.DynamicDrawUsage)
+
+    geo.setAttribute('position', posAttr)
+    geo.setAttribute('aOpacity', opAttr)
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTexture: { value: this._glowTex },
+        uSize:    { value: 0.12 },
+      },
+      vertexShader:   BURST_VERT,
+      fragmentShader: BURST_FRAG,
+      transparent:    true,
+      blending:       THREE.AdditiveBlending,
+      depthWrite:     false,
     })
 
     const mesh = new THREE.Points(geo, mat)
     this._group.add(mesh)
 
-    const dotObj = { mesh, pos3: new THREE.Vector3() }
-    this._dotMeshes.push(dotObj)
-    return this._dotMeshes.length - 1
+    this._burstGeo       = geo
+    this._burstPositions = positions
+    this._burstOpacities = opacities
+    this._burstMat       = mat
+    this._burstMesh      = mesh
+    this._burstActive    = true
   }
 
-  // ── Globe rotation ───────────────────────────────────────────────────────
+  /** Write burst dot i's world position directly into the shared buffer. */
+  setBurstDotPos(i, x, y, z) {
+    if (!this._burstPositions) return
+    const o = i * 3
+    this._burstPositions[o]     = x
+    this._burstPositions[o + 1] = y
+    this._burstPositions[o + 2] = z
+  }
+
+  /** Write burst dot i's opacity into the shared buffer. */
+  setBurstDotOpacity(i, v) {
+    if (this._burstOpacities) this._burstOpacities[i] = v
+  }
+
+  // ── Camera & group ────────────────────────────────────────────────────────
+
+  /** Pull the camera back along Z — creates the zoom-out / infinite-scale effect. */
+  setCameraZ(z) {
+    if (this._camera) {
+      this._camera.position.z = z
+      // Keep looking at origin
+      this._camera.lookAt(0, 0, 0)
+    }
+  }
 
   rotateGroup(angle) {
     if (this._group) this._group.rotation.y = angle

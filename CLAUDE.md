@@ -149,6 +149,8 @@ c:\ClaudeCodeProjects\Noga1Year\
 - **No `.gitignore` on init:** The initial commit did not include `.gitignore`. Added in the retroactive commit from 2026-05-31.
 - **`tl.call()` does not advance timeline duration:** A GSAP timeline whose only entries are `tl.call()` + `tl.addLabel()` can report `tl.duration() = 0`, causing subsequent `tl.addLabel()` calls to stack at the same time. Fix: track an explicit `cursor` variable and insert a tiny `tl.to({}, {duration: 0.001}, cursor - 0.001)` anchor after each event to force the timeline to recognise the correct end time.
 - **`animateParticlesOut` must use independent `gsap.to()`:** Calling `tl.to()` inside a `tl.call()` callback to modify the SAME timeline inserts tweens at an already-elapsed position, causing unreliable behaviour. Use `gsap.to()` (independent tween) for particle fade-out instead.
+- **1000 burst dots: use one BufferGeometry, not 1000 meshes.** 1000 individual `THREE.Points` meshes = 1000 draw calls = frame drops. Solution: pre-allocate a single `BufferGeometry` with `DynamicDrawUsage`, per-vertex `aOpacity` float attribute, and a `ShaderMaterial` (BURST_VERT / BURST_FRAG). The render loop marks the buffers `needsUpdate = true` once per frame while the burst is active. This keeps the burst at ONE draw call regardless of dot count.
+- **ShaderMaterial point size formula:** `gl_PointSize = uSize * (300.0 / -mvPosition.z)`. At camera z=6 the constant 300 gives a natural size equivalent to PointsMaterial with sizeAttenuation. As camera pulls back to z=16, burst dots automatically appear smaller via perspective — no explicit size tween needed.
 
 ---
 
@@ -181,17 +183,25 @@ A 3D globe built from glowing dots connected by thin lines.
 1. Text box fades in at center with event title + italic body text
 2. Body types letter-by-letter at 28 chars/sec, Web Audio tick per character
 3. Text box shrinks/fades; dot fades in at origin and flies to sphere position (1.1s, `power3.inOut`)
-4. On landing: title label appears at dot's projected screen position, fades out after 1.8s; connection lines to all prior dots fade in (additive blending, 0.8s stagger)
+4. On landing: title label appears at dot's projected screen position — **stays permanently**; connection lines to all prior dots fade in (additive blending, 0.8s stagger)
 
 **Events 7–11 (dot + label, sequential with decreasing gaps):**
-Dot flies to position (0.9s, `power2.inOut`). Title label appears on landing, fades after 1.8s. Lines connect. Gaps between events: 4s → 3s → 2s → 1s → 0.5s (exponential acceleration).
+Dot flies to position (0.9s, `power2.inOut`). Title label appears on landing — **stays permanently**. Lines connect. Gaps between events: 4s → 3s → 2s → 1s → 0.5s.
 
-**Final burst:**
-100 tiny dots on a Fibonacci sphere. Each dot is scheduled via an individual `tl.call()` at time `burstStart + 7 * (i/99)^0.42`. This power curve (exponent < 1) produces slow start (~1 dot/sec) accelerating to ~30 dots/sec at the end — total ~7s. Dot size 0.10 world units.
+**Final burst — "infinite scale" zoom-out:**
+1000 tiny dots on a Fibonacci sphere (single BufferGeometry + ShaderMaterial = one draw call). Each dot is scheduled via an individual `tl.call()` at `burstStart + 7 * (i/999)^0.3`. Power curve 0.3 gives ~1 dot/s at start, ~476 dots/s at peak — total ~7s.
 
-**Timing:** cursor is tracked as an explicit absolute-second variable. A tiny anchor tween (`duration: 0.001`) is inserted after each event to keep `tl.duration()` reliable.
+Simultaneously with the burst, four GSAP tweens on the master timeline:
+- **Camera pullback**: z 6→16 (`power2.in`) — the globe appears to expand infinitely
+- **Named dot shrink**: `material.size` 0.22→0.055 (`power2.in`) — combined with perspective = ~8× shrink
+- **Label scale**: CSS scale 1→0.25 (`power2.in`) — labels become tiny and hard to read
+- **Globe rotation**: 0→0.35 rad (`none`) — slow turn during expansion
 
-**Idle rotation:** Globe rotates 0.6 rad over 2.5s (`power1.inOut`) → `onComplete` → Phase 3.
+After burst: **2s hold** on the full expanded view. Then `onComplete` → Phase 3.
+
+**Performance:** burst uses `initBurstSystem(1000)` pre-allocating a single `BufferGeometry` with `DynamicDrawUsage`. Render loop uploads buffers once per frame while burst is active (~16 KB/frame = trivial). ShaderMaterial with per-vertex `aOpacity` attribute enables per-dot opacity in a single draw call.
+
+**Timing:** cursor is tracked as an explicit absolute-second variable. Anchor tweens (`duration: 0.001`) keep `tl.duration()` reliable after zero-duration `tl.call()` entries.
 
 ---
 
@@ -255,3 +265,6 @@ Detailed scene specs will be provided when we reach each phase.
 | 2026-05-31 | Fix 2: All 11 dots now show title labels after landing (was only events 7–11). |
 | 2026-05-31 | Fix 3: Events 7–11 now appear one at a time with explicit decreasing gaps (4s/3s/2s/1s/0.5s) using manual cursor tracking. |
 | 2026-05-31 | Fix 4: Burst upgraded to 100 dots, one tl.call() per dot, power-curve timing (slow start → ~30/s at end). |
+| 2026-05-31 | Fix 1b: All dot labels now permanent (no fade-out); tracked in labelEls array for burst animation. |
+| 2026-05-31 | Fix 2b: Burst "infinite scale" zoom-out — camera z 6→16, named dot size 0.22→0.055, label CSS scale 1→0.25, globe rotation 0→0.35 rad — all GSAP tweens on master timeline. |
+| 2026-05-31 | Fix 3b: Burst upgraded to 1000 dots. Single BufferGeometry + ShaderMaterial (one draw call). Per-vertex aOpacity attribute. Power curve 0.3 gives ~1/s start → ~476/s peak. 2s hold after burst. |
