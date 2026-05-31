@@ -26,7 +26,7 @@
 import { gsap } from 'gsap'
 import EVENTS from '../../core/events.js'
 
-// ── Fibonacci sphere ────────────────────────────────────────────────────────
+// ── Fibonacci sphere helpers ───────────────────────────────────────────────
 
 function fibonacciSphere(n, radius) {
   const phi = Math.PI * (3 - Math.sqrt(5))
@@ -36,6 +36,28 @@ function fibonacciSphere(n, radius) {
     const r = Math.sqrt(1 - y * y)
     const t = phi * i
     pts.push([Math.cos(t) * r * radius, y * radius, Math.sin(t) * r * radius])
+  }
+  return pts
+}
+
+/**
+ * Fibonacci sphere where the radius grows from rStart to rEnd.
+ * rPow > 1 → slow start / fast end (radius near rStart for most early dots,
+ * exploding to rEnd for the last dots).
+ *
+ * Used for burst dots so early dots land on the globe while late dots
+ * fly outward to fill the entire viewport.
+ */
+function fibonacciSphereGrowing(n, rStart, rEnd, rPow) {
+  const phi = Math.PI * (3 - Math.sqrt(5))
+  const pts = []
+  for (let i = 0; i < n; i++) {
+    const t      = n > 1 ? i / (n - 1) : 0
+    const radius = rStart + (rEnd - rStart) * Math.pow(t, rPow)
+    const y      = 1 - t * 2
+    const r      = Math.sqrt(Math.max(0, 1 - y * y))
+    const theta  = phi * i
+    pts.push([Math.cos(theta) * r * radius, y * radius, Math.sin(theta) * r * radius])
   }
   return pts
 }
@@ -268,8 +290,14 @@ export function buildGlobeSequence({ scene, overlayEl, onTypeChar, onComplete })
   // Pre-allocate the buffer geometry for all 1000 burst dots
   tl.call(() => scene.initBurstSystem(BURST_COUNT), null, burstStart)
 
-  // Pre-compute all 1000 sphere positions
-  const burstPositions = fibonacciSphere(BURST_COUNT, 1.8)
+  // Burst dot positions: radius grows from globe edge (1.8) to screen-filling (18).
+  // Power-3 curve keeps early dots near the globe, then the last ~300 dots
+  // explode outward to fill and overflow the entire viewport.
+  //
+  // At camera z=16 (end of zoom-out), FOV 55°:
+  //   screen half-height ≈ 8.3 wu, half-width ≈ 14.8 wu, half-diagonal ≈ 17 wu
+  //   → radius 18 reaches beyond every screen edge and corner.
+  const burstPositions = fibonacciSphereGrowing(BURST_COUNT, 1.8, 18, 3)
 
   // Schedule each dot with power-curve timing.
   // delay[i] = BURST_DURATION * (i/999)^0.3
