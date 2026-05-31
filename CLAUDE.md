@@ -147,6 +147,8 @@ c:\ClaudeCodeProjects\Noga1Year\
 - **Particle positions use `getBoundingClientRect`:** Phase1Opening particle spawning reads the title element's screen rect. The element must be rendered and visible when `getBoundingClientRect` fires — the `tl.call()` at `card1+=0.1` (100ms after fade begins) gives enough time.
 - **Three.js Points geometry update:** When moving a dot, `geometry.attributes.position.needsUpdate = true` must be set — Three.js won't re-upload the buffer otherwise.
 - **No `.gitignore` on init:** The initial commit did not include `.gitignore`. Added in the retroactive commit from 2026-05-31.
+- **`tl.call()` does not advance timeline duration:** A GSAP timeline whose only entries are `tl.call()` + `tl.addLabel()` can report `tl.duration() = 0`, causing subsequent `tl.addLabel()` calls to stack at the same time. Fix: track an explicit `cursor` variable and insert a tiny `tl.to({}, {duration: 0.001}, cursor - 0.001)` anchor after each event to force the timeline to recognise the correct end time.
+- **`animateParticlesOut` must use independent `gsap.to()`:** Calling `tl.to()` inside a `tl.call()` callback to modify the SAME timeline inserts tweens at an already-elapsed position, causing unreliable behaviour. Use `gsap.to()` (independent tween) for particle fade-out instead.
 
 ---
 
@@ -160,12 +162,12 @@ Pure black screen. A single faint serif "touch to begin" pulses slowly (opacity 
 
 ### Phase 1 — Opening Sequence ✅ BUILT
 
-Total duration: ~13.5 seconds.
+Total duration: ~7.6 seconds.
 
-1. "One Year Together" fades + rises (2s, `power2.out`), gold glow (`text-shadow` triple layer), 18-dot particle shimmer halo drifts outward. Holds ~3s at full opacity.
-2. Dissolves (1.2s, `power2.in`). Short black (~1.4s).
+1. "One Year Together" fades + rises (1.2s, `power2.out`), gold glow (`text-shadow` triple layer), 18-dot particle shimmer halo drifts outward (1.1s drift). Holds ~1.6s at full opacity.
+2. Dissolves (0.7s, `power2.in`). Short black (~0.3s).
 3. "Infinite Memories" — same treatment.
-4. Dissolves. Short black (~1.5s). → Phase 2.
+4. Dissolves. Short black (~1.0s). → Phase 2.
 
 Controlled by `PlaybackController` — tap or spacebar pauses/resumes at any point.
 
@@ -179,13 +181,15 @@ A 3D globe built from glowing dots connected by thin lines.
 1. Text box fades in at center with event title + italic body text
 2. Body types letter-by-letter at 28 chars/sec, Web Audio tick per character
 3. Text box shrinks/fades; dot fades in at origin and flies to sphere position (1.1s, `power3.inOut`)
-4. On landing: connection lines to all prior dots fade in (additive blending, 0.8s stagger)
+4. On landing: title label appears at dot's projected screen position, fades out after 1.8s; connection lines to all prior dots fade in (additive blending, 0.8s stagger)
 
-**Events 7–11 (dot + label):**
-Dot appears and flies to position in one motion (0.9s, `power2.inOut`). Title label appears near the projected screen position, fades out after 1.6s.
+**Events 7–11 (dot + label, sequential with decreasing gaps):**
+Dot flies to position (0.9s, `power2.inOut`). Title label appears on landing, fades after 1.8s. Lines connect. Gaps between events: 4s → 3s → 2s → 1s → 0.5s (exponential acceleration).
 
 **Final burst:**
-60 dots on a Fibonacci sphere, exponential delay curve (fast at end, slow at start — total ~7s). Dot size 0.10 world units.
+100 tiny dots on a Fibonacci sphere. Each dot is scheduled via an individual `tl.call()` at time `burstStart + 7 * (i/99)^0.42`. This power curve (exponent < 1) produces slow start (~1 dot/sec) accelerating to ~30 dots/sec at the end — total ~7s. Dot size 0.10 world units.
+
+**Timing:** cursor is tracked as an explicit absolute-second variable. A tiny anchor tween (`duration: 0.001`) is inserted after each event to keep `tl.duration()` reliable.
 
 **Idle rotation:** Globe rotates 0.6 rad over 2.5s (`power1.inOut`) → `onComplete` → Phase 3.
 
@@ -247,3 +251,7 @@ Detailed scene specs will be provided when we reach each phase.
 | 2026-05-31 | Phase 2 built: GlobeScene.js (Three.js), globeSequence.js (GSAP master timeline, all 11 events + 60-dot burst), Phase2Globe.jsx (canvas + DOM overlay mount). |
 | 2026-05-31 | Phase 3 skeleton built: Phase3Transition.jsx placeholder. |
 | 2026-05-31 | Workflow Rules added to CLAUDE.md. .gitignore created. Retroactive commit of all session work. |
+| 2026-05-31 | Fix 1: Phase 1 tightened from ~13.5s to ~7.6s (rise 1.2s, hold 1.6s, dissolve 0.7s). |
+| 2026-05-31 | Fix 2: All 11 dots now show title labels after landing (was only events 7–11). |
+| 2026-05-31 | Fix 3: Events 7–11 now appear one at a time with explicit decreasing gaps (4s/3s/2s/1s/0.5s) using manual cursor tracking. |
+| 2026-05-31 | Fix 4: Burst upgraded to 100 dots, one tl.call() per dot, power-curve timing (slow start → ~30/s at end). |

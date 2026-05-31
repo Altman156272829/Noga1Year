@@ -1,24 +1,23 @@
 /**
  * globeSequence.js — GSAP master timeline for Phase 2.
  *
- * Orchestrates the full "memory globe" sequence:
- *   1. Events 1–6: text box types out → morphs into dot → dot flies to sphere position → lines connect
- *   2. Events 7–11: dot appears with label at sphere position → lines connect
- *   3. Final burst: dozens of tiny dots explode outward with exponential acceleration
- *   4. Globe rotates slowly for ~2s
- *   5. onComplete fires → Phase 3
+ * Sequence:
+ *   Events 1–6  — typewriter text box → dot flies to sphere → label appears → lines connect
+ *   Events 7–11 — dot flies directly, label appears, lines connect; one at a time with
+ *                 decreasing gaps: 4s / 3s / 2s / 1s / 0.5s
+ *   Final burst — 100 tiny dots, one per tl.call(), power-curve timing (slow → fast)
+ *   Rotation    — globe rotates 0.6 rad over 2.5s → onComplete
  *
- * Dependencies:
- *   scene    — GlobeScene instance (Three.js)
- *   overlayEl — DOM element for text box / labels
- *   onTypeChar — called per typed character (AudioEngine.tick)
- *   onComplete — fires when the full sequence is done
+ * All events (1–11) show a title label after the dot lands.
+ *
+ * TIMING NOTE: cursor is tracked manually as an absolute second value so that
+ * tl.call() (zero-duration) callbacks don't cause label pile-up.
  */
 
 import { gsap } from 'gsap'
 import EVENTS from '../../core/events.js'
 
-// ── Fibonacci sphere for the burst dots ────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function fibonacciSphere(n, radius) {
   const phi = Math.PI * (3 - Math.sqrt(5))
@@ -32,27 +31,27 @@ function fibonacciSphere(n, radius) {
   return pts
 }
 
-// ── Text box DOM helpers ────────────────────────────────────────────────────
+// ── Text box (events 1–6) ──────────────────────────────────────────────────
 
 function createTextBox(overlayEl) {
   const box = document.createElement('div')
   Object.assign(box.style, {
-    position:      'absolute',
-    top:           '50%',
-    left:          '50%',
-    transform:     'translate(-50%, -50%)',
-    maxWidth:      'min(520px, 88vw)',
-    padding:       '2rem 2.5rem',
-    border:        '1px solid rgba(200,169,110,0.25)',
-    background:    'rgba(0,0,0,0.6)',
-    backdropFilter:'blur(4px)',
-    borderRadius:  '2px',
-    opacity:       '0',
-    pointerEvents: 'none',
+    position:       'absolute',
+    top:            '50%',
+    left:           '50%',
+    transform:      'translate(-50%, -50%)',
+    maxWidth:       'min(520px, 88vw)',
+    padding:        '2rem 2.5rem',
+    border:         '1px solid rgba(200,169,110,0.25)',
+    background:     'rgba(0,0,0,0.6)',
+    backdropFilter: 'blur(4px)',
+    borderRadius:   '2px',
+    opacity:        '0',
+    pointerEvents:  'none',
   })
 
-  const title = document.createElement('p')
-  Object.assign(title.style, {
+  const titleEl = document.createElement('p')
+  Object.assign(titleEl.style, {
     fontFamily:    'var(--font-serif)',
     fontWeight:    '500',
     fontSize:      'clamp(0.7rem, 2.5vw, 0.9rem)',
@@ -62,8 +61,8 @@ function createTextBox(overlayEl) {
     marginBottom:  '0.9rem',
   })
 
-  const body = document.createElement('p')
-  Object.assign(body.style, {
+  const bodyEl = document.createElement('p')
+  Object.assign(bodyEl.style, {
     fontFamily:    'var(--font-serif)',
     fontWeight:    '300',
     fontStyle:     'italic',
@@ -74,35 +73,30 @@ function createTextBox(overlayEl) {
     textShadow:    '0 0 20px rgba(200,169,110,0.3)',
   })
 
-  box.appendChild(title)
-  box.appendChild(body)
+  box.appendChild(titleEl)
+  box.appendChild(bodyEl)
   overlayEl.appendChild(box)
-  return { box, title, body }
+  return { box, titleEl, bodyEl }
 }
 
-function removeTextBox(box) {
-  box.parentNode?.removeChild(box)
+function removeEl(el) {
+  el?.parentNode?.removeChild(el)
 }
 
-/**
- * Type text into `el` letter-by-letter, calling onChar per character.
- * Returns a GSAP timeline that you can add to a parent tl at a label.
- */
+/** Type text letter-by-letter, firing onChar per visible character. */
 function typeText(el, text, onChar, charsPerSec = 28) {
-  const tl = gsap.timeline()
-  tl.call(() => { el.textContent = '' })
-  const chars = text.split('')
-  chars.forEach((ch, i) => {
+  el.textContent = ''
+  text.split('').forEach((ch, i) => {
     const delay = i / charsPerSec
-    tl.call(() => {
+    // Independent gsap.delayedCall so typing is not part of master tl
+    gsap.delayedCall(delay, () => {
       el.textContent += ch
       if (ch !== ' ') onChar()
-    }, null, delay)
+    })
   })
-  return tl
 }
 
-// ── Label (events 7–11) ─────────────────────────────────────────────────────
+// ── Dot label ─────────────────────────────────────────────────────────────
 
 function createLabel(overlayEl, title) {
   const el = document.createElement('p')
@@ -110,7 +104,7 @@ function createLabel(overlayEl, title) {
     position:      'absolute',
     fontFamily:    'var(--font-serif)',
     fontWeight:    '400',
-    fontSize:      'clamp(0.65rem, 2vw, 0.8rem)',
+    fontSize:      'clamp(0.6rem, 1.8vw, 0.75rem)',
     letterSpacing: '0.22em',
     textTransform: 'uppercase',
     color:         'var(--gold)',
@@ -126,218 +120,199 @@ function createLabel(overlayEl, title) {
 
 function positionLabel(el, screenPos) {
   el.style.left = `${screenPos.x}px`
-  el.style.top  = `${screenPos.y - 22}px`
+  el.style.top  = `${screenPos.y - 24}px`
 }
 
-// ── Main sequence builder ───────────────────────────────────────────────────
+/** Show a label at the dot's projected screen position, then fade it out. */
+function showDotLabel(overlayEl, scene, dotIndex, title) {
+  const sp     = scene.projectToScreen(scene.getDotPosition(dotIndex))
+  const labelEl = createLabel(overlayEl, title)
+  positionLabel(labelEl, sp)
+  gsap.to(labelEl, { opacity: 0.75, duration: 0.4, ease: 'power2.out' })
+  gsap.to(labelEl, {
+    opacity:  0,
+    duration: 0.4,
+    delay:    1.8,
+    ease:     'power2.in',
+    onComplete: () => removeEl(labelEl),
+  })
+}
+
+/** Draw connection lines from the newest dot to all earlier dots. */
+function connectToPrevious(scene, dotIndices) {
+  const newest = dotIndices.length - 1
+  for (let prev = 0; prev < newest; prev++) {
+    const li = scene.connect(prev, newest)
+    gsap.to({ v: 0 }, {
+      v:        0.18,
+      duration: 0.8,
+      delay:    prev * 0.07,
+      ease:     'power2.out',
+      onUpdate: function () { scene.setLineOpacity(li, this.targets()[0].v) },
+    })
+  }
+}
+
+// ── Main sequence ──────────────────────────────────────────────────────────
 
 export function buildGlobeSequence({ scene, overlayEl, onTypeChar, onComplete }) {
-  const tl = gsap.timeline({ paused: true, onComplete })
+  const tl         = gsap.timeline({ paused: true, onComplete })
+  const dotIndices = []
+  let   cursor     = 0   // absolute seconds — manually tracked
 
-  const dotIndices = []   // scene dot indices for each event, in order
+  // Helper: anchor the timeline at an absolute time so tl.duration() is reliable
+  const anchor = (t) => tl.to({}, { duration: 0.001 }, t - 0.001)
 
-  // ── Events 1–6: full text box sequence ───────────────────────────────────
-  EVENTS.filter((e) => e.hasTextBox).forEach((event, idx) => {
-    const label = `event${event.id}`
-    tl.addLabel(label)
+  // ── Events 1–6: typewriter text box ─────────────────────────────────────
 
-    // 1. Create text box DOM (deferred to the moment the label fires)
-    let boxEls = null
+  EVENTS.filter((e) => e.hasTextBox).forEach((event) => {
+    const eventStart = cursor
+    tl.addLabel(`event${event.id}`, eventStart)
 
-    tl.call(() => {
-      boxEls = createTextBox(overlayEl)
-      boxEls.title.textContent = event.title
-    }, null, label)
-
-    // 2. Fade box in
-    tl.to({}, { duration: 0 }, label)  // ensure label exists as a time anchor
-    tl.call(() => {
-      gsap.to(boxEls.box, { opacity: 1, duration: 0.5, ease: 'power2.out' })
-    }, null, `${label}+=0.1`)
-
-    // 3. Type text (body is empty, typed in)
-    const typeDelay  = 0.7
     const typeDuration = event.text.length / 28 + 0.2
-
-    tl.call(() => {
-      const typeTl = typeText(boxEls.body, event.text, onTypeChar, 28)
-      // Insert into *running* tl isn't easy, so we just fire it via call
-    }, null, `${label}+=${typeDelay}`)
-
-    // 4. Wait for text to finish typing, then hold briefly
-    const holdStart = typeDelay + typeDuration + 0.6
-
-    // 5. Spawn dot at center (invisible)
-    tl.call(() => {
-      const di = scene.spawnDotAtScreenCenter()
-      dotIndices.push(di)
-    }, null, `${label}+=${holdStart}`)
-
-    // 6. Shrink/fade text box and fly dot to position simultaneously
-    const morphStart = holdStart + 0.1
-
-    tl.call(() => {
-      const di = dotIndices[idx]
-      const [tx, ty, tz] = event.position
-
-      // Fade box out while dot opacity rises
-      gsap.to(boxEls.box, { opacity: 0, scale: 0.15, duration: 0.7, ease: 'power3.in' })
-
-      // Dot fades in at origin
-      const dotProxy = { opacity: 0, x: 0, y: 0, z: 0 }
-      gsap.to(dotProxy, {
-        opacity: 1,
-        duration: 0.4,
-        ease: 'power2.out',
-        onUpdate() { scene.setDotOpacity(di, dotProxy.opacity) },
-      })
-
-      // After short delay, dot flies to sphere position
-      gsap.to(dotProxy, {
-        x: tx, y: ty, z: tz,
-        duration: 1.1,
-        delay: 0.35,
-        ease: 'power3.inOut',
-        onUpdate() { scene.setDotWorldPos(di, dotProxy.x, dotProxy.y, dotProxy.z) },
-      })
-
-    }, null, `${label}+=${morphStart}`)
-
-    // 7. After dot lands, remove box and draw connections to previous dots
+    const holdStart    = 0.7 + typeDuration + 0.6
+    const morphStart   = holdStart + 0.1
     const connectStart = morphStart + 1.7
 
+    let boxEls = null
+
+    // 1. Create + fade in text box
     tl.call(() => {
-      removeTextBox(boxEls.box)
+      boxEls = createTextBox(overlayEl)
+      boxEls.titleEl.textContent = event.title
+      gsap.to(boxEls.box, { opacity: 1, duration: 0.5, ease: 'power2.out' })
+    }, null, eventStart)
 
-      // Connect to all previously landed dots
-      for (let prev = 0; prev < dotIndices.length - 1; prev++) {
-        const li = scene.connect(prev, dotIndices.length - 1)
-        gsap.to({ v: 0 }, {
-          v: 0.18,
-          duration: 0.8,
-          delay: prev * 0.08,
-          ease: 'power2.out',
-          onUpdate: function() { scene.setLineOpacity(li, this.targets()[0].v) },
-        })
-      }
-    }, null, `${label}+=${connectStart}`)
+    // 2. Type text body
+    tl.call(() => {
+      typeText(boxEls.bodyEl, event.text, onTypeChar, 28)
+    }, null, eventStart + 0.7)
 
-    // 8. Pause before next event
-    tl.addLabel(`${label}-end`, `${label}+=${connectStart + 1.0}`)
+    // 3. Spawn dot at origin (invisible)
+    tl.call(() => {
+      dotIndices.push(scene.spawnDotAtScreenCenter())
+    }, null, eventStart + holdStart)
+
+    // 4. Morph box out, dot flies to sphere position
+    tl.call(() => {
+      const di = dotIndices[dotIndices.length - 1]
+      const [tx, ty, tz] = event.position
+
+      gsap.to(boxEls.box, { opacity: 0, scale: 0.15, duration: 0.7, ease: 'power3.in',
+        onComplete: () => removeEl(boxEls.box) })
+
+      const proxy = { opacity: 0, x: 0, y: 0, z: 0 }
+      gsap.to(proxy, {
+        opacity:  1,
+        duration: 0.4,
+        ease:     'power2.out',
+        onUpdate() { scene.setDotOpacity(di, proxy.opacity) },
+      })
+      gsap.to(proxy, {
+        x: tx, y: ty, z: tz,
+        duration: 1.1,
+        delay:    0.35,
+        ease:     'power3.inOut',
+        onUpdate() { scene.setDotWorldPos(di, proxy.x, proxy.y, proxy.z) },
+      })
+    }, null, eventStart + morphStart)
+
+    // 5. After landing: show label + connect lines
+    tl.call(() => {
+      const di = dotIndices[dotIndices.length - 1]
+      showDotLabel(overlayEl, scene, di, event.title)
+      connectToPrevious(scene, dotIndices)
+    }, null, eventStart + connectStart)
+
+    // Advance cursor to end of this event
+    cursor = eventStart + connectStart + 1.5
+    anchor(cursor)
   })
 
-  // ── Events 7–11: dot + label only ──────────────────────────────────────
-  EVENTS.filter((e) => !e.hasTextBox).forEach((event, idx) => {
-    const label = `event${event.id}`
-    tl.addLabel(label)
+  // ── Events 7–11: dot + label only, one at a time ─────────────────────────
 
-    let labelEl = null
+  // Gaps in seconds between consecutive events 7→8, 8→9, 9→10, 10→11, and 11→burst
+  const GAPS = [4, 3, 2, 1, 0.5]
+
+  EVENTS.filter((e) => !e.hasTextBox).forEach((event, idx) => {
+    const eventStart = cursor
+    tl.addLabel(`event${event.id}`, eventStart)
 
     tl.call(() => {
-      const di = scene.spawnDotAtScreenCenter()
-      dotIndices.push(di)
-      const allIdx = dotIndices.length - 1
-
+      dotIndices.push(scene.spawnDotAtScreenCenter())
+      const di = dotIndices[dotIndices.length - 1]
       const [tx, ty, tz] = event.position
-      const dotProxy = { opacity: 0, x: 0, y: 0, z: 0 }
 
-      // Dot fades in and immediately flies to position
-      gsap.to(dotProxy, {
-        opacity: 0.9,
-        x: tx, y: ty, z: tz,
+      const proxy = { opacity: 0, x: 0, y: 0, z: 0 }
+      gsap.to(proxy, {
+        opacity:  0.9,
+        x:        tx,
+        y:        ty,
+        z:        tz,
         duration: 0.9,
-        ease: 'power2.inOut',
+        ease:     'power2.inOut',
         onUpdate() {
-          scene.setDotOpacity(allIdx, dotProxy.opacity)
-          scene.setDotWorldPos(allIdx, dotProxy.x, dotProxy.y, dotProxy.z)
+          scene.setDotOpacity(di, proxy.opacity)
+          scene.setDotWorldPos(di, proxy.x, proxy.y, proxy.z)
         },
         onComplete() {
-          // Position label near dot
-          const sp = scene.projectToScreen(scene.getDotPosition(allIdx))
-          labelEl = createLabel(overlayEl, event.title)
-          positionLabel(labelEl, sp)
-          gsap.to(labelEl, { opacity: 0.7, duration: 0.5, ease: 'power2.out' })
-
-          // Connect to previous dots
-          for (let prev = 0; prev < allIdx; prev++) {
-            const li = scene.connect(prev, allIdx)
-            gsap.to({ v: 0 }, {
-              v: 0.15,
-              duration: 0.7,
-              delay: prev * 0.06,
-              ease: 'power2.out',
-              onUpdate: function() { scene.setLineOpacity(li, this.targets()[0].v) },
-            })
-          }
-
-          // Fade label out after a moment
-          gsap.to(labelEl, { opacity: 0, duration: 0.4, delay: 1.6, ease: 'power2.in',
-            onComplete: () => labelEl?.parentNode?.removeChild(labelEl) })
+          showDotLabel(overlayEl, scene, di, event.title)
+          connectToPrevious(scene, dotIndices)
         },
       })
-    }, null, label)
+    }, null, eventStart)
 
-    tl.addLabel(`${label}-end`, `${label}+=2.5`)
+    cursor += GAPS[idx]
+    anchor(cursor)
   })
 
   // ── Final burst ────────────────────────────────────────────────────────
-  const BURST_COUNT = 60
-  const burstLabel  = 'burst'
+
+  const BURST_COUNT    = 100
+  const BURST_DURATION = 7   // seconds for all dots to fire
+  const burstStart     = cursor
+  tl.addLabel('burst', burstStart)
+
   const burstPositions = fibonacciSphere(BURST_COUNT, 1.8)
 
-  tl.addLabel(burstLabel)
+  for (let i = 0; i < BURST_COUNT; i++) {
+    // power curve < 1 → slow start, fast end
+    // p ≈ 0.42 gives interval[0] ≈ 1s and interval[end] ≈ 0.03s for n=100, total=7
+    const t_norm = i / (BURST_COUNT - 1)
+    const delay  = i === 0 ? 0 : BURST_DURATION * Math.pow(t_norm, 0.42)
 
-  tl.call(() => {
-    const burstIndices = []
-
-    for (let i = 0; i < BURST_COUNT; i++) {
+    tl.call(((pos) => () => {
       const di = scene.spawnBurstDot()
-      burstIndices.push(di)
-    }
-
-    // Exponential acceleration: each successive dot spawns faster and travels faster
-    for (let i = 0; i < BURST_COUNT; i++) {
-      const di     = burstIndices[i]
-      const [tx, ty, tz] = burstPositions[i]
-
-      // Exponential delay: first dots are slow, last are fast
-      // Total window: 7 seconds; delay from 0..6s mapped exponentially
-      const t_norm = i / (BURST_COUNT - 1)          // 0..1
-      const delay  = (Math.pow(t_norm, 0.3)) * 5.5  // fast start, compress toward end
-
-      const speed = 0.4 + (1 - t_norm) * 1.2        // faster early, slower late
-      const dur   = Math.max(0.5, speed)
-
+      const [tx, ty, tz] = burstPositions[pos]
       const proxy = { opacity: 0, x: 0, y: 0, z: 0 }
-
       gsap.to(proxy, {
-        opacity: 0.55 + Math.random() * 0.35,
-        x: tx, y: ty, z: tz,
-        duration: dur,
-        delay,
-        ease: 'power2.out',
+        opacity:  0.35 + Math.random() * 0.35,
+        x:        tx,
+        y:        ty,
+        z:        tz,
+        duration: 0.45 + Math.random() * 0.3,
+        ease:     'power2.out',
         onUpdate() {
           scene.setDotOpacity(di, proxy.opacity)
           scene.setDotWorldPos(di, proxy.x, proxy.y, proxy.z)
         },
       })
-    }
-  }, null, burstLabel)
+    })(i), null, burstStart + delay)
+  }
 
-  // Wait for burst to complete (about 7s total)
-  tl.addLabel('burst-end', `${burstLabel}+=7.5`)
+  // Anchor after burst + a small tail for last dots to finish flying
+  const burstEnd = burstStart + BURST_DURATION + 0.8
+  anchor(burstEnd)
 
-  // ── Slow globe rotation ────────────────────────────────────────────────
-  tl.addLabel('rotate', 'burst-end')
+  // ── Slow globe rotation → handoff ────────────────────────────────────────
 
+  tl.addLabel('rotate', burstEnd)
   tl.to({ angle: 0 }, {
-    angle: 0.6,
+    angle:    0.6,
     duration: 2.5,
-    ease: 'power1.inOut',
-    onUpdate: function() { scene.rotateGroup(this.targets()[0].angle) },
-  }, 'rotate')
-
-  tl.addLabel('done', 'rotate+=2.8')
+    ease:     'power1.inOut',
+    onUpdate: function () { scene.rotateGroup(this.targets()[0].angle) },
+  }, burstEnd)
 
   return tl
 }

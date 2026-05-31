@@ -57,8 +57,8 @@ function createParticles(container, titleEl) {
 
 function animateParticlesIn(particles, tl, labelName) {
   particles.forEach((p, i) => {
-    const delay = i * 0.06
-    const driftR = p.startR + 20 + Math.random() * 30
+    const delay = i * 0.05
+    const driftR = p.startR + 18 + Math.random() * 24
     const driftX = p.cx + Math.cos(p.angle) * driftR
     const driftY = p.cy + Math.sin(p.angle) * driftR * 0.5
 
@@ -68,21 +68,17 @@ function animateParticlesIn(particles, tl, labelName) {
         opacity: 0.5 + Math.random() * 0.4,
         left:    `${driftX}px`,
         top:     `${driftY}px`,
-        duration: 1.6,
+        duration: 1.1,
         ease:    'power2.out',
       },
-      `${labelName}+=${0.3 + delay}`
+      `${labelName}+=${0.2 + delay}`
     )
   })
 }
 
-function animateParticlesOut(particles, tl, labelName) {
+function animateParticlesOut(particles) {
   particles.forEach((p) => {
-    tl.to(
-      p.el,
-      { opacity: 0, duration: 0.8, ease: 'power2.in' },
-      labelName
-    )
+    gsap.to(p.el, { opacity: 0, duration: 0.6, ease: 'power2.in' })
   })
 }
 
@@ -112,36 +108,38 @@ export default function Phase1Opening({ onComplete, setController }) {
     // ── Card 1: "One Year Together" ────────────────────────────────
     tl.addLabel('card1')
 
+    // rise 1.2s — tighter than the original 2s
     tl.to(t1, {
       opacity: 1,
       y: 0,
-      duration: 2,
+      duration: 1.2,
       ease: 'power2.out',
     }, 'card1')
 
-    // Particles for card 1 — created after a tiny delay so getBoundingClientRect is valid
+    // Particles — spawn just after rise begins
     let p1 = []
     tl.call(() => {
       p1 = createParticles(container, t1)
       animateParticlesIn(p1, tl, 'card1')
     }, null, 'card1+=0.1')
 
-    // Hold ~3 seconds at full opacity
-    tl.addLabel('card1-hold', 'card1+=2.0')
+    // Hold 1.6s after rise (card1+=1.2 is when fully visible)
+    tl.addLabel('card1-hold', 'card1+=1.2')
 
-    // Dissolve out at card1+=5.0 (2s rise + 3s hold)
-    tl.addLabel('card1-out', 'card1+=5.0')
-    tl.to(t1, { opacity: 0, duration: 1.2, ease: 'power2.in' }, 'card1-out')
-    tl.call(() => animateParticlesOut(p1, tl, 'card1-out'), null, 'card1-out')
-    tl.call(() => removeParticles(p1), null, 'card1-out+=1.3')
+    // Dissolve at card1+=2.8 (1.2 rise + 1.6 hold)
+    tl.addLabel('card1-out', 'card1+=2.8')
+    tl.to(t1, { opacity: 0, duration: 0.7, ease: 'power2.in' }, 'card1-out')
+    tl.call(() => animateParticlesOut(p1), null, 'card1-out')
+    tl.call(() => removeParticles(p1), null, 'card1-out+=0.75')
 
     // ── Card 2: "Infinite Memories" ────────────────────────────────
-    tl.addLabel('card2', 'card1-out+=1.4')
+    // card1-out is t=2.8; dissolve takes 0.7s → done at t=3.5; gap 0.3s → card2 at t=3.8
+    tl.addLabel('card2', 'card1-out+=1.0')
 
     tl.to(t2, {
       opacity: 1,
       y: 0,
-      duration: 2,
+      duration: 1.2,
       ease: 'power2.out',
     }, 'card2')
 
@@ -151,16 +149,16 @@ export default function Phase1Opening({ onComplete, setController }) {
       animateParticlesIn(p2, tl, 'card2')
     }, null, 'card2+=0.1')
 
-    tl.addLabel('card2-hold', 'card2+=2.0')
+    tl.addLabel('card2-hold', 'card2+=1.2')
 
-    // Dissolve out
-    tl.addLabel('card2-out', 'card2+=5.0')
-    tl.to(t2, { opacity: 0, duration: 1.2, ease: 'power2.in' }, 'card2-out')
-    tl.call(() => animateParticlesOut(p2, tl, 'card2-out'), null, 'card2-out')
-    tl.call(() => removeParticles(p2), null, 'card2-out+=1.3')
+    // Dissolve at card2+=2.8 → total Phase 1 ≈ 3.8 + 2.8 = 6.6s dissolve start, done at 7.3s
+    tl.addLabel('card2-out', 'card2+=2.8')
+    tl.to(t2, { opacity: 0, duration: 0.7, ease: 'power2.in' }, 'card2-out')
+    tl.call(() => animateParticlesOut(p2), null, 'card2-out')
+    tl.call(() => removeParticles(p2), null, 'card2-out+=0.75')
 
-    // Short black pause before Phase 2
-    tl.addLabel('end', 'card2-out+=1.5')
+    // Short black before Phase 2 — onComplete fires at ~7.6s total
+    tl.addLabel('end', 'card2-out+=1.0')
 
     // ── PlaybackController ──────────────────────────────────────────
     const ctrl = new PlaybackController(tl)
