@@ -26,40 +26,75 @@
 import { gsap } from 'gsap'
 import EVENTS from '../../core/events.js'
 
-// ── Fibonacci sphere helpers ───────────────────────────────────────────────
+// ── Burst starfield distribution ────────────────────────────────────────────
 
-function fibonacciSphere(n, radius) {
-  const phi = Math.PI * (3 - Math.sqrt(5))
-  const pts = []
+/**
+ * Screen-filling "starfield" target positions for the burst dots.
+ *
+ * Dots are placed in a growing RECTANGLE in the z≈0 plane (with slight depth
+ * jitter), NOT on a sphere. A rectangle guarantees the screen corners get
+ * covered; a sphere would leave them empty. Half-extent grows with a power
+ * curve from ~the globe radius out to beyond the viewport edges at the final
+ * camera distance (z=16) — so early dots cluster on the globe and late dots
+ * fly to and past the screen corners, producing a full-screen starfield.
+ *
+ * Direction is randomised independently of i (the old growing-sphere had
+ * latitude tied to i, so all far dots piled at one pole — fixed here).
+ *
+ * @param opts.baseExtent  starting half-extent (≈ globe radius)
+ * @param opts.maxY        final vertical half-extent in world units (overflows screen)
+ * @param opts.aspect      viewport aspect (width/height) → horizontal extent
+ * @param opts.growPow     power curve for the expansion (>1 = slow start, explosive end)
+ * @param opts.edgeBias    <1 pushes samples toward the frontier/corners
+ * @param opts.depth       ± z jitter for subtle parallax
+ */
+function burstStarfieldPositions(n, opts) {
+  const { baseExtent, maxY, aspect, growPow, edgeBias, depth } = opts
+  const maxX = maxY * Math.max(aspect, 1.2)   // ensure wide coverage even on tall screens
+  const pts  = []
   for (let i = 0; i < n; i++) {
-    const y = 1 - (i / (n - 1)) * 2
-    const r = Math.sqrt(1 - y * y)
-    const t = phi * i
-    pts.push([Math.cos(t) * r * radius, y * radius, Math.sin(t) * r * radius])
+    const f    = n > 1 ? i / (n - 1) : 0
+    const grow = Math.pow(f, growPow)         // 0 → 1, dramatic expansion
+    const ex   = baseExtent + (maxX - baseExtent) * grow
+    const ey   = baseExtent + (maxY - baseExtent) * grow
+    // edge-biased samples in [-1,1] → more dots near the growing frontier/corners
+    const ux = Math.random() * 2 - 1
+    const uy = Math.random() * 2 - 1
+    const x  = Math.sign(ux) * Math.pow(Math.abs(ux), edgeBias) * ex
+    const y  = Math.sign(uy) * Math.pow(Math.abs(uy), edgeBias) * ey
+    const z  = (Math.random() * 2 - 1) * depth
+    pts.push([x, y, z])
   }
   return pts
 }
 
 /**
- * Fibonacci sphere where the radius grows from rStart to rEnd.
- * rPow > 1 → slow start / fast end (radius near rStart for most early dots,
- * exploding to rEnd for the last dots).
+ * Nearest-neighbour search for burst lines.
+ * Returns up to `k` indices < i (already-spawned dots) that are closest to dot i,
+ * searching only the most recent `windowSize` dots and only within `maxDist`.
  *
- * Used for burst dots so early dots land on the globe while late dots
- * fly outward to fill the entire viewport.
+ * Recent-window + distance cutoff keeps this O(n·window) instead of O(n²) and
+ * caps total line count — essential for 1000 dots without frame drops.
  */
-function fibonacciSphereGrowing(n, rStart, rEnd, rPow) {
-  const phi = Math.PI * (3 - Math.sqrt(5))
-  const pts = []
-  for (let i = 0; i < n; i++) {
-    const t      = n > 1 ? i / (n - 1) : 0
-    const radius = rStart + (rEnd - rStart) * Math.pow(t, rPow)
-    const y      = 1 - t * 2
-    const r      = Math.sqrt(Math.max(0, 1 - y * y))
-    const theta  = phi * i
-    pts.push([Math.cos(theta) * r * radius, y * radius, Math.sin(theta) * r * radius])
+function nearestBurstNeighbors(positions, i, windowSize, k, maxDist) {
+  const [xi, yi, zi] = positions[i]
+  const start = Math.max(0, i - windowSize)
+  const maxD2 = maxDist * maxDist
+  const best  = []   // sorted ascending by d2, length ≤ k
+  for (let j = start; j < i; j++) {
+    const [xj, yj, zj] = positions[j]
+    const dx = xi - xj, dy = yi - yj, dz = zi - zj
+    const d2 = dx * dx + dy * dy + dz * dz
+    if (d2 > maxD2) continue
+    if (best.length < k) {
+      best.push({ idx: j, d2 })
+      best.sort((a, b) => a.d2 - b.d2)
+    } else if (d2 < best[best.length - 1].d2) {
+      best[best.length - 1] = { idx: j, d2 }
+      best.sort((a, b) => a.d2 - b.d2)
+    }
   }
-  return pts
+  return best.map((b) => b.idx)
 }
 
 // ── Text box DOM (events 1–6) ──────────────────────────────────────────────
@@ -285,19 +320,39 @@ export function buildGlobeSequence({ scene, overlayEl, onTypeChar, onComplete })
   const BURST_DURATION = 7      // seconds for all 1000 dots to fire
   const burstStart     = cursor
 
+  // Up to 4 neighbour lines per dot; pre-allocate that capacity in one geometry
+  const BURST_NEIGHBORS  = 4
+  const BURST_LINE_MAX   = BURST_COUNT * BURST_NEIGHBORS
+  const NEIGHBOR_WINDOW  = 120    // search only the last N spawned dots
+  const NEIGHBOR_MAXDIST = 2.6    // world units — skip long crossing lines
+  const LINE_OPACITY     = 0.13   // thin glowing gold, same style as named lines
+
   tl.addLabel('burst', burstStart)
 
-  // Pre-allocate the buffer geometry for all 1000 burst dots
-  tl.call(() => scene.initBurstSystem(BURST_COUNT), null, burstStart)
+  // Pre-allocate the buffer geometries for all 1000 burst dots + their lines
+  tl.call(() => {
+    scene.initBurstSystem(BURST_COUNT)
+    scene.initBurstLines(BURST_LINE_MAX)
+  }, null, burstStart)
 
-  // Burst dot positions: radius grows from globe edge (1.8) to screen-filling (18).
-  // Power-3 curve keeps early dots near the globe, then the last ~300 dots
-  // explode outward to fill and overflow the entire viewport.
+  // Burst dot targets: a growing screen-filling rectangle (NOT a sphere — a
+  // sphere leaves the corners empty). Half-extent grows from ~the globe out to
+  // beyond the viewport edges at camera z=16, so the burst ends as a full
+  // starfield covering 100% of the screen, corners included.
   //
-  // At camera z=16 (end of zoom-out), FOV 55°:
-  //   screen half-height ≈ 8.3 wu, half-width ≈ 14.8 wu, half-diagonal ≈ 17 wu
-  //   → radius 18 reaches beyond every screen edge and corner.
-  const burstPositions = fibonacciSphereGrowing(BURST_COUNT, 1.8, 18, 3)
+  // At z=16 (FOV 55°): screen half-height ≈ 8.3 wu. maxY=11.5 overflows it;
+  // maxX = 11.5·aspect overflows horizontally → corners guaranteed covered.
+  const aspect = (typeof window !== 'undefined' && window.innerHeight)
+    ? window.innerWidth / window.innerHeight
+    : 1.78
+  const burstPositions = burstStarfieldPositions(BURST_COUNT, {
+    baseExtent: 2.2,
+    maxY:       11.5,
+    aspect,
+    growPow:    1.8,
+    edgeBias:   0.7,
+    depth:      3,
+  })
 
   // Schedule each dot with power-curve timing.
   // delay[i] = BURST_DURATION * (i/999)^0.3
@@ -319,6 +374,18 @@ export function buildGlobeSequence({ scene, overlayEl, onTypeChar, onComplete })
         onUpdate() {
           scene.setBurstDotPos(idx, proxy.x, proxy.y, proxy.z)
           scene.setBurstDotOpacity(idx, proxy.opacity)
+        },
+        onComplete() {
+          // Connect this dot to its 3-4 nearest already-placed neighbours,
+          // extending the neural-net look into the burst. Lines use target
+          // positions (static) so no per-frame line position updates are needed.
+          const neighbors = nearestBurstNeighbors(
+            burstPositions, idx, NEIGHBOR_WINDOW, BURST_NEIGHBORS, NEIGHBOR_MAXDIST,
+          )
+          for (let n = 0; n < neighbors.length; n++) {
+            const [bx, by, bz] = burstPositions[neighbors[n]]
+            scene.addBurstLine(tx, ty, tz, bx, by, bz, LINE_OPACITY)
+          }
         },
       })
     })(i), null, burstStart + delay)

@@ -95,7 +95,8 @@ Entry point: faint "touch to begin" prompt on pure black — one tap unlocks Web
 | Phase state | `ENTRY → PHASE1 → PHASE2 → PHASE3` | Simple string enum in App.jsx; each phase mounts/unmounts independently |
 | Particle shimmer | DOM div dots animated by GSAP | Avoids a second canvas; 18 dots per title card, drift outward on fade-in |
 | Connection lines | Three.js LineSegments, additive blending | Gives a glowing neural-net look; opacity GSAP-tweened on connect |
-| Burst dots | Fibonacci sphere distribution, 60 dots | Even coverage; exponential delay curve makes the burst accelerate visually |
+| Burst dots | 1000 dots, growing-rectangle starfield, single BufferGeometry + ShaderMaterial | Fills the whole screen (corners included); one draw call keeps 60fps |
+| Burst lines | Nearest-neighbour (3–4 per dot), single batched BufferGeometry | Neural-net look without O(n²); one draw call for up to 4000 lines |
 
 ---
 
@@ -151,6 +152,10 @@ c:\ClaudeCodeProjects\Noga1Year\
 - **`animateParticlesOut` must use independent `gsap.to()`:** Calling `tl.to()` inside a `tl.call()` callback to modify the SAME timeline inserts tweens at an already-elapsed position, causing unreliable behaviour. Use `gsap.to()` (independent tween) for particle fade-out instead.
 - **1000 burst dots: use one BufferGeometry, not 1000 meshes.** 1000 individual `THREE.Points` meshes = 1000 draw calls = frame drops. Solution: pre-allocate a single `BufferGeometry` with `DynamicDrawUsage`, per-vertex `aOpacity` float attribute, and a `ShaderMaterial` (BURST_VERT / BURST_FRAG). The render loop marks the buffers `needsUpdate = true` once per frame while the burst is active. This keeps the burst at ONE draw call regardless of dot count.
 - **ShaderMaterial point size formula:** `gl_PointSize = uSize * (300.0 / -mvPosition.z)`. At camera z=6 the constant 300 gives a natural size equivalent to PointsMaterial with sizeAttenuation. As camera pulls back to z=16, burst dots automatically appear smaller via perspective — no explicit size tween needed.
+- **Burst meshes need `frustumCulled = false`:** A BufferGeometry's bounding sphere is computed once from its initial vertex positions. Burst dots/lines start at the origin and fly outward, so the bounds stay tiny at origin. Three.js would frustum-cull the whole cloud whenever the origin leaves the view. It only *appeared* to work because the camera always looks at origin — set `frustumCulled = false` to be correct.
+- **Burst spread must be a rectangle, not a sphere:** Filling a sphere leaves the screen *corners* empty (the silhouette is a disc). For a true edge-to-edge starfield, distribute burst targets in a growing rectangle (X scaled by viewport aspect) with edge-biased sampling, in the z≈0 plane with slight depth jitter.
+- **Don't tie direction to the dot index when radius grows with index:** The first burst attempt grew a Fibonacci-sphere radius with `i` while also deriving latitude from `i` (`y = 1 - i/n*2`). Result: every large-radius dot landed near one pole. Decouple direction (randomised) from the growth factor.
+- **Burst lines must be batched:** 4000 individual `LineSegments` meshes = 4000 draw calls = crash. Use ONE pre-allocated `BufferGeometry` (`LineSegments`) with a per-vertex `aOpacity` attribute + `ShaderMaterial`, `setDrawRange(0, count*2)` as lines are added, uploaded on a dirty flag. Nearest-neighbour search is bounded to a recent window (120) + distance cutoff (2.6 wu) to stay O(n·window) and cap the line count.
 
 ---
 
@@ -191,12 +196,10 @@ Dot flies to position (0.9s, `power2.inOut`). Title label appears on landing —
 **Final burst — "infinite scale" zoom-out:**
 1000 tiny dots scheduled via individual `tl.call()` at `burstStart + 7 * (i/999)^0.3`. Power curve 0.3 gives ~1 dot/s at start, ~476 dots/s at peak — total ~7s. Single BufferGeometry + ShaderMaterial = one draw call.
 
-Dot positions use `fibonacciSphereGrowing(1000, 1.8, 18, 3)` — radius grows from globe surface (1.8) to screen-filling (18) with a power-3 curve:
-- Early dots (i=0..~300): radius 1.8→2.3, stay near globe
-- Mid dots (i=300..700): radius 2.3→7.4, visible outward spread
-- Late dots (i=700..999): radius 7.4→18, explode beyond screen edges → full starfield
+**Screen-filling starfield distribution** (`burstStarfieldPositions`): dots target a growing **rectangle** in the z≈0 plane (NOT a sphere — a sphere leaves screen corners empty), with slight ±z depth jitter. Half-extent grows with a `^1.8` power curve from ~globe radius (2.2) to `maxY = 11.5` vertical / `11.5·aspect` horizontal. Direction is randomised independently of `i` and edge-biased (`pow 0.7`) so dots pile toward the frontier/corners. At camera z=16 the screen half-height ≈ 8.3 wu, so 11.5 overflows every edge → final frame is a full starfield covering 100% of the viewport, corners included.
+> Earlier bug fixed: the old growing-sphere tied latitude to `i`, so all far dots clustered at one pole and the spread looked confined.
 
-At camera z=16 (end of zoom-out): screen half-height ≈ 8.3 wu, half-width ≈ 14.8 wu, half-diagonal ≈ 17 wu — radius 18 exceeds every corner. The rapid-fire late dots are ALSO the farthest-flying, so the acceleration in speed and the explosion in spread happen in sync.
+**Nearest-neighbour burst lines** (Fix): when each burst dot lands, it connects to its **3–4 nearest already-placed dots** (`nearestBurstNeighbors`: searches only the last 120 spawned, within 2.6 wu, keeps 4 closest). This extends the neural-net look into the burst without O(n²) blow-up. All burst lines live in **one** pre-allocated `BufferGeometry` + `ShaderMaterial` (per-vertex `aOpacity`, additive gold) = **one draw call** for up to 4000 lines. Lines use static target positions (no per-frame position update); buffer uploads only on a dirty flag when new lines are added.
 
 Simultaneously with the burst, four GSAP tweens on the master timeline:
 - **Camera pullback**: z 6→16 (`power2.in`) — the globe appears to expand infinitely
@@ -206,7 +209,7 @@ Simultaneously with the burst, four GSAP tweens on the master timeline:
 
 After burst: **2s hold** on the full expanded starfield view. Then `onComplete` → Phase 3.
 
-**Performance:** burst uses `initBurstSystem(1000)` pre-allocating a single `BufferGeometry` with `DynamicDrawUsage`. Render loop uploads buffers once per frame while burst is active (~16 KB/frame = trivial). ShaderMaterial with per-vertex `aOpacity` attribute enables per-dot opacity in a single draw call.
+**Performance:** `initBurstSystem(1000)` + `initBurstLines(4000)` each pre-allocate one `BufferGeometry` with `DynamicDrawUsage`. Dot buffers upload every frame while active (~16 KB); line buffers upload only when lines are added (dirty flag). Both meshes set `frustumCulled = false` (positions start at origin then fly out — stale bounds would otherwise cull them). Two draw calls total for 1000 dots + up to 4000 lines.
 
 **Timing:** cursor is tracked as an explicit absolute-second variable. Anchor tweens (`duration: 0.001`) keep `tl.duration()` reliable after zero-duration `tl.call()` entries.
 
@@ -276,3 +279,5 @@ Detailed scene specs will be provided when we reach each phase.
 | 2026-05-31 | Fix 2b: Burst "infinite scale" zoom-out — camera z 6→16, named dot size 0.22→0.055, label CSS scale 1→0.25, globe rotation 0→0.35 rad — all GSAP tweens on master timeline. |
 | 2026-05-31 | Fix 3b: Burst upgraded to 1000 dots. Single BufferGeometry + ShaderMaterial (one draw call). Per-vertex aOpacity attribute. Power curve 0.3 gives ~1/s start → ~476/s peak. 2s hold after burst. |
 | 2026-05-31 | Burst spread fix: dots now use fibonacciSphereGrowing(1000, 1.8, 18, 3) — radius grows from globe (1.8) to beyond screen edges (18) with power-3 curve. Late rapid-fire dots fly furthest → synchronized speed+spread explosion → full starfield by burst end. |
+| 2026-06-01 | Burst full-screen fix: replaced growing-sphere (clustered far dots at one pole) with burstStarfieldPositions — a growing aspect-aware RECTANGLE with edge-biased sampling. Guarantees edge-to-edge + corner coverage at camera z=16. |
+| 2026-06-01 | Burst neighbour lines: each burst dot now connects to its 3–4 nearest already-placed dots (recent-window + distance-cutoff search). All lines batched into one BufferGeometry + ShaderMaterial (one draw call, up to 4000 lines). Both burst meshes set frustumCulled=false. |
