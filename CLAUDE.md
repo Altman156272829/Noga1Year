@@ -97,6 +97,11 @@ Entry point: faint "touch to begin" prompt on pure black — one tap unlocks Web
 | Connection lines | Three.js LineSegments, additive blending | Gives a glowing neural-net look; opacity GSAP-tweened on connect |
 | Burst dots | 1000 dots, growing-rectangle starfield, single BufferGeometry + ShaderMaterial | Fills the whole screen (corners included); one draw call keeps 60fps |
 | Burst lines | Nearest-neighbour (3–4 per dot), single batched BufferGeometry | Neural-net look without O(n²); one draw call for up to 4000 lines |
+| Scene 1 reach | Dev-jump via `?scene=1` URL flag; `PHASE4` not in normal flow yet | Build/test the 80s scene in isolation without replaying Phases 0–2 |
+| Scene 1 characters | Stylized primitives (Box/Cylinder/Sphere) grouped per character | No external models; clear silhouettes + correct hair colors are enough |
+| Scene 1 crowd/desks | `InstancedMesh` + shared `MeshStandardMaterial` palette | Classroom students/desks are identical → one draw call each; keeps 60fps |
+| Scene 1 dust | Reuse Phase 2 glow-texture + per-vertex `aOpacity` ShaderMaterial | Light-beam motes in one draw call; same proven technique as the burst |
+| School bell | `AudioEngine.bell()` — detuned partials, exponential decay | No audio files; matches the Web-Audio-only constraint |
 
 ---
 
@@ -122,17 +127,24 @@ c:\ClaudeCodeProjects\Noga1Year\
     │   └── PlaybackController.js      — GSAP timeline wrapper: play/pause/toggle/skip
     │
     ├── audio/
-    │   └── AudioEngine.js             — Web Audio singleton: unlock(), tick(), ambient()
+    │   └── AudioEngine.js             — Web Audio singleton: unlock(), tick(), ambient(), bell()
     │
     └── phases/
         ├── EntryScreen.jsx            — Pure black + pulsing "touch to begin"; unlocks audio
         ├── Phase1Opening.jsx          — Two title cards with gold glow + particle shimmer
         ├── Phase3Transition.jsx       — Skeleton only: "— to be continued —"
         │
-        └── Phase2Globe/
-            ├── Phase2Globe.jsx        — Mounts canvas + DOM overlay; wires scene to sequence
-            ├── GlobeScene.js          — Imperative Three.js: dots, lines, burst, rotation
-            └── globeSequence.js       — GSAP master timeline: all 11 events + burst + handoff
+        ├── Phase2Globe/
+        │   ├── Phase2Globe.jsx        — Mounts canvas + DOM overlay; wires scene to sequence
+        │   ├── GlobeScene.js          — Imperative Three.js: dots, lines, burst, rotation
+        │   └── globeSequence.js       — GSAP master timeline: all 11 events + burst + handoff
+        │
+        └── Phase4Scene1/              — Scene 1 "The First Meeting" (dev-jump: ?scene=1)
+            ├── Phase4Scene1.jsx       — Mounts canvas + overlay; wires SchoolScene to sequence
+            ├── SchoolScene.js         — Imperative Three.js: lobby + classroom sets, primitive
+            │                            characters, warm lights, instanced desks/students,
+            │                            light-beam dust (reused burst-shader technique)
+            └── scene1Sequence.js      — GSAP master timeline: 7 acts + bell + glow + fade-out
 ```
 
 ---
@@ -156,6 +168,12 @@ c:\ClaudeCodeProjects\Noga1Year\
 - **Burst spread must be a rectangle, not a sphere:** Filling a sphere leaves the screen *corners* empty (the silhouette is a disc). For a true edge-to-edge starfield, distribute burst targets in a growing rectangle (X scaled by viewport aspect) with edge-biased sampling, in the z≈0 plane with slight depth jitter.
 - **Don't tie direction to the dot index when radius grows with index:** The first burst attempt grew a Fibonacci-sphere radius with `i` while also deriving latitude from `i` (`y = 1 - i/n*2`). Result: every large-radius dot landed near one pole. Decouple direction (randomised) from the growth factor.
 - **Burst lines must be batched:** 4000 individual `LineSegments` meshes = 4000 draw calls = crash. Use ONE pre-allocated `BufferGeometry` (`LineSegments`) with a per-vertex `aOpacity` attribute + `ShaderMaterial`, `setDrawRange(0, count*2)` as lines are added, uploaded on a dirty flag. Nearest-neighbour search is bounded to a recent window (120) + distance cutoff (2.6 wu) to stay O(n·window) and cap the line count.
+- **Scene 1 — proxy continuity for cuts:** In `scene1Sequence.js` the camera and each character share ONE persistent proxy (`cam`, `cp[name]`) so consecutive GSAP tweens continue from the current value. An instantaneous "cut" (`camCut` / `charCut`) MUST also write the new values into that proxy, not just call the scene setter — otherwise the next tween eases from the stale pre-cut origin and the camera/character visibly snaps back before moving.
+- **Scene 1 — rotating instanced sphere heads is invisible:** The Act 7 class reaction first rotated each instanced student head with `makeRotationY`. A sphere centered on its own origin shows no change under rotation, so nothing read on screen. Fix: make `setStudentsLook(theta)` a positional *lean* (offset x/y/z of each head instance toward Noam) instead of a rotation.
+- **Scene 1 — separate sets, not one connected building:** The lobby and the classroom are built far apart in world space (classroom at x≈80) and the camera *cuts* between them. Because every camera move is scripted on the master timeline, there is no need to model a physically connected staircase→corridor→classroom; cutting is cheaper and reads as film.
+- **Scene 1 — stylized seating via leg rotation:** Seated characters (`seated:true`) just rotate their hip-pivoted single-segment legs forward (~−1.4 rad) and drop the root to bench height. There are no knee joints; this is intentionally stylized. `setStanding(name)` resets leg rotation to 0 and root.y to 0 when a character needs to stand (Noga in Act 6).
+- **Scene 1 — fade-to-black via overlay div:** The end-of-scene fade is a plain black `<div>` appended to the DOM overlay and tweened on the master timeline (not a renderer clear-alpha change), so pause/seek scrubs it like every other beat. It is removed in the React cleanup along with all overlay children.
+- **Vite dev-server `/` returns 404 to `Invoke-WebRequest`:** When probing the dev server from PowerShell, `GET /` 404s but `GET /index.html` returns 200 — a quirk of IWR vs Vite's middleware, NOT an app fault. Browsers load `/` (and `/?scene=1`) fine. Also: Vite hops to the next free port (5173→5174→…); the printed port has ANSI color codes between `127.0.0.1:` and the number, so strip `\x1b\[[0-9;]*m` before regex-matching the port.
 
 ---
 
@@ -221,16 +239,71 @@ A cinematic timeline that moves through all 11 events chronologically. Skeleton 
 
 ---
 
-### Phase 4–8 — The 5 Full Scenes (not built yet)
+### Phase 4 — Scene 1: "The First Meeting" ✅ BUILT (Three.js)
 
-Full Three.js animated 3D scenes for:
-1. The First Meeting
-2. First Date
-3. Karting + becoming official
-4. First Kiss
-5. The Sea (Nahsholim)
+The first of the 5 full cinematic 3D scenes. A ~80-second, 7-act film dramatizing how Noam
+met Noga at Kalman Middle School (the Eshkol Hapayis building). Same engine architecture as
+Phase 2: raw Three.js scene class + a single GSAP master timeline driven by
+`PlaybackController`; tap / click / spacebar pauses and resumes.
 
-Detailed scene specs will be provided when we reach each phase.
+**Flow placement — dev-jump.** The normal film flow is unchanged
+(`ENTRY→PHASE1→PHASE2→PHASE3`). A new `PHASE4` state exists but is reached **only via a URL
+flag** (`?scene=1`), so the scene can be built and tested in isolation. When Scene 1 finishes
+it fades to black and calls the phase transition callback → Phase 3 placeholder. (When Phase 3
+and the remaining scenes are built, Scene 1 will be re-wired into the real chronological flow.)
+
+**The setting:** Eshkol Hapayis building — modern bright architecture, large glass-brick
+illuminated wall, metal facade columns, wide lobby outside the auditorium, benches along the
+walls, a staircase, and a classroom. Warm golden spring morning light through the glass.
+
+**The characters** (stylized primitives — Box/Cylinder/Sphere — with clear silhouettes and
+correct hair colors):
+- **Noam** — tall, light-brown hair, casual school clothes.
+- **Noga** — medium height, darker-brown hair, **white scrunchie** on the hair (visible).
+- **Noam's friend** — beside Noam on entry.
+- **Two of Noga's friends** — seated with her on the bench.
+- **Classroom students** — background figures (instanced) for Acts 5 & 7.
+
+**The 7 acts (single GSAP master timeline, each a labelled section):**
+1. **ENTRANCE (0–8s)** — camera follows Noam + friend from behind through the entrance; the
+   bright lobby opens ahead. Walk-cycle + dolly-in.
+2. **THE FIRST SIGHT (8–18s)** — Noam slows; cut to his POV of Noga laughing on the bench with
+   her two friends, warm light on her; time slows slightly; Noam turns to his friend.
+3. **THE APPROACH (18–30s)** — side dolly as Noam walks to the bench and starts talking; Noga
+   looks up at him.
+4. **UP THE STAIRS (30–40s)** — the **school bell** rings (`AudioEngine.bell()`, Web Audio,
+   no file); Noam glances up, waves goodbye, walks to the staircase; camera watches him climb;
+   one glance back at Noga before he disappears around the corner.
+5. **THE DECISION (40–52s)** — classroom; Noam at a desk, distracted, glancing at the door;
+   close-up on his face; he makes the decision and stands up mid-lesson.
+6. **THE INSTAGRAM (52–68s)** — back in the lobby; Noga standing in the same spot; Noam walks
+   up confidently and asks for her Instagram; she smiles and shows her phone; he types it in;
+   a brief **golden glow** moment (warm spotlight intensity tweens up then settles).
+7. **THE VICTORY (68–80s)** — Noam climbs back up, enters the classroom, the whole class turns
+   to look, he raises his fist in victory, the class reacts; camera pulls back to reveal the
+   full room as the scene **fades to black** → Phase 3.
+
+**Cinematic camera:** every act has a distinct angle — dolly, POV cut, side tracking,
+close-up, pull-back — never static. All camera moves and character poses are GSAP tweens on
+the master timeline (via scene proxy setters), so pause/seek affects everything coherently.
+
+**Lighting:** warm `SpotLight` (~`0xffe6b0`) angled from the glass wall casting visible beams,
+plus a low warm `AmbientLight` and a softer classroom fill. Subtle **dust particles** drift in
+the light beams — built with the **same single-BufferGeometry + glow-texture + per-vertex
+`aOpacity` ShaderMaterial technique as the Phase 2 burst** (one draw call, `frustumCulled=false`).
+
+**Performance:** mobile-first, `pixelRatio` capped at 2. Classroom desks and background
+students are `InstancedMesh`; a small shared `MeshStandardMaterial` palette (skin, two hair
+tones, clothing, metal, glass-emissive, wood) is reused across all geometry. Sets are static —
+only transforms and material intensities animate. Timing uses the explicit `cursor` +
+`anchor()` pattern from Phase 2 so `tl.duration()` stays reliable across `tl.call()` entries.
+
+---
+
+### Phase 5–8 — The remaining 4 Full Scenes (not built yet)
+
+Full Three.js animated 3D scenes for: First Date · Karting + becoming official · First Kiss ·
+The Sea (Nahsholim). Detailed specs will be provided when we reach each one.
 
 ---
 
@@ -241,8 +314,9 @@ Detailed scene specs will be provided when we reach each phase.
 3. ✅ Phase 1 — Opening sequence (title cards + particles)
 4. ✅ Phase 2 — Globe intro (Three.js memory globe)
 5. ✅ Phase 3 skeleton transition (placeholder)
-6. Phase 3 — Full timeline (awaiting spec)
-7. Phase 4–8 — The 5 full 3D scenes (awaiting specs)
+6. ✅ Phase 4 — Scene 1 "The First Meeting" (built ahead of Phase 3; reachable via ?scene=1)
+7. Phase 3 — Full timeline (awaiting spec)
+8. Phase 5–8 — The remaining 4 full 3D scenes (awaiting specs)
 
 ---
 
@@ -281,3 +355,4 @@ Detailed scene specs will be provided when we reach each phase.
 | 2026-05-31 | Burst spread fix: dots now use fibonacciSphereGrowing(1000, 1.8, 18, 3) — radius grows from globe (1.8) to beyond screen edges (18) with power-3 curve. Late rapid-fire dots fly furthest → synchronized speed+spread explosion → full starfield by burst end. |
 | 2026-06-01 | Burst full-screen fix: replaced growing-sphere (clustered far dots at one pole) with burstStarfieldPositions — a growing aspect-aware RECTANGLE with edge-biased sampling. Guarantees edge-to-edge + corner coverage at camera z=16. |
 | 2026-06-01 | Burst neighbour lines: each burst dot now connects to its 3–4 nearest already-placed dots (recent-window + distance-cutoff search). All lines batched into one BufferGeometry + ShaderMaterial (one draw call, up to 4000 lines). Both burst meshes set frustumCulled=false. |
+| 2026-06-01 | Phase 4 / Scene 1 "The First Meeting" built: SchoolScene.js (Three.js lobby + classroom sets, primitive characters Noam/Noga/+3 friends, warm SpotLight + AmbientLight, instanced glass bricks/desks/students, reused burst-shader light-beam dust), scene1Sequence.js (single GSAP master timeline, 7 acts ~80s: entrance→first sight→approach→stairs+bell→classroom decision→Instagram+golden glow→victory fist + pull-back + fade-to-black), Phase4Scene1.jsx mount. Added AudioEngine.bell() (Web Audio, detuned partials). App.jsx gained PHASE4 + ?scene=1 dev-jump (normal flow unchanged; Scene 1 hands off to Phase 3). `npm run build` passes. |
