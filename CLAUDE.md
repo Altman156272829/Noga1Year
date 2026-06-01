@@ -173,8 +173,8 @@ c:\ClaudeCodeProjects\Noga1Year\
 - **Scene 1 — separate sets, not one connected building:** The lobby and the classroom are built far apart in world space (classroom at x≈80) and the camera *cuts* between them. Because every camera move is scripted on the master timeline, there is no need to model a physically connected staircase→corridor→classroom; cutting is cheaper and reads as film.
 - **Scene 1 — stylized seating via leg rotation:** Seated characters (`seated:true`) just rotate their hip-pivoted single-segment legs forward (~−1.4 rad) and drop the root to bench height. There are no knee joints; this is intentionally stylized. `setStanding(name)` resets leg rotation to 0 and root.y to 0 when a character needs to stand (Noga in Act 6).
 - **Scene 1 — fade-to-black via overlay div:** The end-of-scene fade is a plain black `<div>` appended to the DOM overlay and tweened on the master timeline (not a renderer clear-alpha change), so pause/seek scrubs it like every other beat. It is removed in the React cleanup along with all overlay children.
-- **Scene 1 — guarantee identity colours with emissive, not just lighting:** Under the new low-ambient dramatic lighting, characters lit only by spots all read as dark silhouettes and "look the same". Give hair / skin / the white scrunchie a small `emissive` + `emissiveIntensity` so the colour is self-evident regardless of where the spotlights fall. (Lit-only colour is not reliable in a film-noir lighting setup.)
-- **Scene 1 — `setGlow(boost)` must reference the new light baselines:** When the lighting was rebalanced (key `SpotLight` 1.4→0.5, glass emissive 0.9→1.7, added a Noga spot at 3.0), `setGlow` had to be updated so `boost = 0` *restores those baselines* and a positive boost adds on top. An out-of-date baseline made `setGlow(0)` (called at Act 7 start) silently dim the wall and over-brighten the key.
+- **Scene 1 is bright daylight, NOT the dark cinematic style:** The dark/moody look belongs to Phases 1–2 (opening titles, globe). Scene 1 is a warm, sunny spring-morning memory and must be bright and airy — high warm ambient + hemisphere + sunlight through the glass wall, no silhouettes. (An earlier pass over-applied film-noir lighting here and made it far too dark; the corrected baseline is bright.) Keep this contrast in mind for the remaining scenes — match each scene's lighting to its real setting, not to the wrapper.
+- **Scene 1 — `setGlow(boost)` must reference the CURRENT light baselines:** `setGlow` lifts the sun key + Noga wash + glass emissive together for the Act 6 golden moment, and `boost = 0` (called at Act 7 start) must *restore* the baselines. Whenever the lights are rebalanced, update these constants in `setGlow` to match (currently sun 1.35, Noga wash 0.9, glass emissive 1.45) — a stale baseline silently dims/over-brightens at `boost = 0`.
 - **Scene 1 — glass "glow from within" = backing emissive plane + translucent bricks:** A single emissive brick grid looks flat. Put an unlit emissive `MeshBasicMaterial` plane *behind* slightly-`transparent` (opacity ~0.82) emissive bricks so the mortar gaps reveal inner light; frame it with metal bars and add a spill `PointLight`. That's what reads as architectural illuminated glazing.
 - **Scene 1 — idle animations must sync the shared proxy:** The bench `idle()` drives `setCharHeadTurn` / `setCharRot` directly via sines. If it doesn't also write the values back into `cp[name]`, the next scripted `head()` / `turn()` tween eases from the proxy's stale value and the character visibly snaps. Fix: `idle` updates `cp[name].head`/`.ry` every frame.
 - **Vite dev-server `/` returns 404 to `Invoke-WebRequest`:** When probing the dev server from PowerShell, `GET /` 404s but `GET /index.html` returns 200 — a quirk of IWR vs Vite's middleware, NOT an app fault. Browsers load `/` (and `/?scene=1`) fine. Also: Vite hops to the next free port (5173→5174→…); the printed port has ANSI color codes between `127.0.0.1:` and the number, so strip `\x1b\[[0-9;]*m` before regex-matching the port.
@@ -291,21 +291,25 @@ correct hair colors):
 close-up, pull-back — never static. All camera moves and character poses are GSAP tweens on
 the master timeline (via scene proxy setters), so pause/seek affects everything coherently.
 
-**Lighting (film-noir + warm gold):** pure-black clear colour + black fog; a very low warm
-`AmbientLight` (0.12) so the set falls into darkness and is sculpted almost entirely by warm
-spotlights — a broad dim key from the glass wall (the one the golden-glow tween lifts), a
-dramatic warm spot on the bench, a **brighter, warmer dedicated spot on Noga** to draw the eye,
-a spot on the staircase, and a warm classroom key. Only a faint cool rim separates silhouettes
-from the black. All set surfaces are dark/warm; **character hair, skin and the white scrunchie
-carry a little emissive** so identities and hair colours (Noam light brown, Noga dark brown)
-read even in the low light. Subtle **dust particles** drift in the light beams — built with the
-**same single-BufferGeometry + glow-texture + per-vertex `aOpacity` ShaderMaterial technique as
-the Phase 2 burst** (one draw call, `frustumCulled=false`).
+**Lighting (bright warm spring morning — the DELIBERATE contrast to the dark wrapper):**
+Scene 1 is intentionally NOT dark/cinematic like Phases 1–2. It's a happy morning memory, so it
+must read bright, warm and airy — like stepping into a sunlit modern-building lobby. Bright warm
+clear colour + light warm haze fog; strong warm `AmbientLight` (0.95) + a `HemisphereLight`
+(sky/ground bounce) so everything is clearly visible with **no silhouettes**; the main key is a
+warm `DirectionalLight` simulating **morning sunlight streaming through the glass wall** (from
+−x) sweeping across the lobby; a soft warm front fill keeps faces shadow-free; a gentle warm
+wash on Noga still lets the eye find her; a bright warm classroom daylight key for the far set.
+Set surfaces are clean/bright modern tones; character hair/skin/scrunchie keep only a *small*
+emissive as insurance, but the daylight does the work (Noam light brown, Noga dark brown + white
+scrunchie). Subtle **dust particles** drift in the light beams — built with the **same
+single-BufferGeometry + glow-texture + per-vertex `aOpacity` ShaderMaterial technique as the
+Phase 2 burst** (one draw call, `frustumCulled=false`).
 
-**Illuminated glass-brick wall:** a warm emissive backing plane (unlit `MeshBasicMaterial`)
-glows from BEHIND a dense grid of slightly-translucent emissive glass bricks (mortar gaps let
-the inner light through), framed by thin metal mullions, with a warm `PointLight` spilling the
-glow onto the lobby floor — reads as architectural illuminated glazing rather than a flat panel.
+**Illuminated glass-brick wall = the main light source:** a bright warm yellow-white emissive
+backing plane (unlit `MeshBasicMaterial`) glows from BEHIND a dense grid of slightly-translucent
+emissive glass bricks (mortar gaps let the daylight through), framed by thin metal mullions,
+with a strong warm `PointLight` spilling the glow across the lobby floor and characters — reads
+as morning sun pouring through architectural glazing.
 
 **Bench idle life:** seated Noga + her two friends run a continuous `idle` (head-bob + body
 sway at offset phases) during Acts 2–3 so they never look frozen; the idle writes back into the
@@ -376,3 +380,4 @@ The Sea (Nahsholim). Detailed specs will be provided when we reach each one.
 | 2026-06-01 | Burst neighbour lines: each burst dot now connects to its 3–4 nearest already-placed dots (recent-window + distance-cutoff search). All lines batched into one BufferGeometry + ShaderMaterial (one draw call, up to 4000 lines). Both burst meshes set frustumCulled=false. |
 | 2026-06-01 | Phase 4 / Scene 1 "The First Meeting" built: SchoolScene.js (Three.js lobby + classroom sets, primitive characters Noam/Noga/+3 friends, warm SpotLight + AmbientLight, instanced glass bricks/desks/students, reused burst-shader light-beam dust), scene1Sequence.js (single GSAP master timeline, 7 acts ~80s: entrance→first sight→approach→stairs+bell→classroom decision→Instagram+golden glow→victory fist + pull-back + fade-to-black), Phase4Scene1.jsx mount. Added AudioEngine.bell() (Web Audio, detuned partials). App.jsx gained PHASE4 + ?scene=1 dev-jump (normal flow unchanged; Scene 1 hands off to Phase 3). `npm run build` passes. |
 | 2026-06-01 | Scene 1 visual pass (5 fixes): (1) pure-black clear colour + black fog (was washed-out grey); (2) dramatic film-noir lighting — ambient 0.55→0.12, added warm spots on the bench + staircase + a brighter dedicated Noga spot, dark/warm set surfaces; (3) self-lit (emissive) hair/skin/scrunchie so Noam's light-brown vs Noga's dark-brown hair + white scrunchie always read; (4) bench idle animations (head-bob + body sway, proxy-synced) for Noga + friends in Acts 2–3, Noga warm-highlighted; (5) glass-brick wall now glows from within (emissive backing plane behind translucent bricks + metal frame + spill light). `setGlow` rebaselined to the new lights. `npm run build` passes. |
+| 2026-06-01 | Scene 1 lighting corrected — it was made too dark (over-applied film-noir). Rebalanced to a BRIGHT, warm spring-morning interior: clear colour/fog → bright warm; ambient 0.12→0.95 + added a HemisphereLight; main key is now a warm DirectionalLight = morning sunlight through the glass wall; soft warm front fill (no silhouettes); glass wall brightened to act as the main daylight source with a stronger floor spill; set surfaces lightened; character emissive reduced (daylight now does the work); Noga spot softened to a gentle wash; classroom set daylit. `setGlow` rebaselined (sun 1.35 / Noga 0.9 / glass 1.45). Dark cinematic style remains only for Phases 1–2. `npm run build` passes. |
