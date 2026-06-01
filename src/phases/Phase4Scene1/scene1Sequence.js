@@ -79,6 +79,22 @@ export function buildScene1Sequence({ scene, overlayEl, onBell, onComplete }) {
     tl.to(a, { v: to, duration: dur, ease, onUpdate: () => scene.setCharArm(name, side, a.v) }, t)
   }
 
+  // Subtle continuous idle: head bob + gentle body sway, so seated characters
+  // never look frozen (Fix 4). Drives the scene setters directly with sines.
+  const idle = (name, t, dur, { headAmp = 0.14, swayAmp = 0.04, hz = 0.45, phase = 0, baseRy = 0 } = {}) => {
+    const o = { p: phase }
+    tl.to(o, { p: phase + dur * hz * Math.PI * 2, duration: dur, ease: 'none',
+      onUpdate: () => {
+        const h = Math.sin(o.p) * headAmp
+        const r = baseRy + Math.sin(o.p * 0.6 + 1.0) * swayAmp
+        scene.setCharHeadTurn(name, h)
+        scene.setCharRot(name, r)
+        // keep the shared proxy in sync so scripted head/turn tweens that follow
+        // continue smoothly from the idle's final pose (no snap)
+        if (cp[name]) { cp[name].head = h; cp[name].ry = r }
+      } }, t)
+  }
+
   // a few back-and-forth glances on a head proxy (laugh / distracted / wave-ish)
   const oscHead = (name, t, dur, amp, cycles = 3) => {
     const o = { p: 0 }
@@ -106,10 +122,11 @@ export function buildScene1Sequence({ scene, overlayEl, onBell, onComplete }) {
   // Cut to Noam's POV: he sees Noga laughing on the bench. Slow push-in = time slows.
   camCut(8, { px: 0.2, py: 1.7, pz: 4, lx: 3.2, ly: 1.15, lz: -1.4 })
   camTo(8.05, 7, { px: 1.2, py: 1.62, pz: 2.4, lx: 3.2, ly: 1.1, lz: -1.4 }, 'power1.out')
-  // Noga + friends laughing (gentle head bobs)
-  oscHead('noga', 8.2, 6.5, 0.18, 4)
-  oscHead('nogaFriend1', 8.4, 6, 0.16, 3)
-  oscHead('nogaFriend2', 8.1, 6.2, 0.16, 4)
+  // Noga + friends alive on the bench — laughing head bobs + body sway (Fix 4).
+  // Noga is the liveliest; friends idle at their own offset phases.
+  idle('noga', 8.2, 15.0, { headAmp: 0.22, swayAmp: 0.06, hz: 0.55 })
+  idle('nogaFriend1', 8.0, 21.5, { headAmp: 0.16, swayAmp: 0.05, hz: 0.4, phase: 1.5 })
+  idle('nogaFriend2', 8.1, 21.4, { headAmp: 0.17, swayAmp: 0.05, hz: 0.48, phase: 3.0 })
   // Noam turns to his friend — cut to a two-shot
   camCut(15.4, { px: 2.6, py: 1.7, pz: 7.5, lx: 0.1, ly: 1.45, lz: 4 })
   head('noam', 15.6, 0.8, 0.7)   // look toward friend (on his right)

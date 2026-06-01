@@ -115,10 +115,11 @@ export default class SchoolScene {
   mount(canvas) {
     this._renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
     this._renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    this._renderer.setClearColor(0x0a0a0f, 1)
+    this._renderer.setClearColor(0x000000, 1)   // pure black, matches site aesthetic
 
     this._scene = new THREE.Scene()
-    this._scene.fog = new THREE.Fog(0x14110c, 22, 70)
+    // Dark warm fog so the set falls off into black — film-noir depth
+    this._scene.fog = new THREE.Fog(0x000000, 14, 58)
 
     this._camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500)
     this._camera.position.set(0, 1.6, 12)
@@ -169,31 +170,35 @@ export default class SchoolScene {
       new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.0, ...opts })
 
     this._mats = {
-      floor:    std(0xCFC7B6, { roughness: 0.7 }),
-      wall:     std(0xE6E0D4),
-      metal:    std(0x9AA0A6, { roughness: 0.35, metalness: 0.8 }),
+      // Dark, warm surfaces so the set reads as a dim cinematic interior that
+      // only comes alive where the warm spotlights hit it.
+      floor:    std(0x2C2820, { roughness: 0.55, metalness: 0.1 }),
+      wall:     std(0x3E3934, { roughness: 0.9 }),
+      metal:    std(0x6E747A, { roughness: 0.3, metalness: 0.85 }),
       glass:    new THREE.MeshStandardMaterial({
-        color: 0xBFD8E8,
-        emissive: 0xFFE6B0,
-        emissiveIntensity: 0.9,
-        roughness: 0.4,
+        color: 0x9CC2DE,
+        emissive: 0xFFDFA0,
+        emissiveIntensity: 1.7,   // glows from within
+        roughness: 0.35,
         metalness: 0.1,
       }),
-      bench:    std(0x8A6B45),
-      desk:     std(0xC8B89A),
-      door:     std(0x6B5238),
-      skin:     std(0xE8B98C, { roughness: 0.9 }),
-      hairNoam: std(0x6B4A2B),   // light brown
-      hairNoga: std(0x33220F),   // darker brown
-      hairAlt:  std(0x4A3A2A),
-      scrunchie: std(0xF5F5F0, { roughness: 0.6 }),
+      bench:    std(0x4A3522),
+      desk:     std(0x6E5F47),
+      door:     std(0x3C2E1E),
+      // Skin/hair carry a little emissive so identities & hair colours read even
+      // in the darker, dramatically-lit scene (Fix 3).
+      skin:     std(0xE8B98C, { roughness: 0.85, emissive: 0x3A1E0E, emissiveIntensity: 0.16 }),
+      hairNoam: std(0xA06E3A, { emissive: 0x5A3C1C, emissiveIntensity: 0.35 }), // light brown
+      hairNoga: std(0x2A1A0E, { emissive: 0x160C05, emissiveIntensity: 0.28 }), // dark brown
+      hairAlt:  std(0x5A4632, { emissive: 0x251B10, emissiveIntensity: 0.3 }),
+      scrunchie: std(0xFFFFFF, { roughness: 0.5, emissive: 0xBBBBBB, emissiveIntensity: 0.45 }),
       phone:    std(0x111118, { emissive: 0x335577, emissiveIntensity: 0.6 }),
-      cloth1:   std(0x44556B),   // Noam
-      cloth2:   std(0x6B4044),   // friend
-      cloth3:   std(0x4E6147),   // Noga
-      cloth4:   std(0x7A6A52),
-      cloth5:   std(0x556070),
-      student:  std(0x5A5A66),
+      cloth1:   std(0x3C5070),   // Noam
+      cloth2:   std(0x6B3A40),   // friend
+      cloth3:   std(0x3F6B52),   // Noga
+      cloth4:   std(0x6E5E46),
+      cloth5:   std(0x495568),
+      student:  std(0x3A3A44),
     }
     this._glassMat = this._mats.glass
     Object.values(this._mats).forEach((m) => this._disposables.push(m))
@@ -204,26 +209,47 @@ export default class SchoolScene {
   // ── Lights ─────────────────────────────────────────────────────────────────
 
   _buildLights() {
-    const ambient = new THREE.AmbientLight(0xFFE8CC, 0.55)
+    // Very low warm ambient — just enough that shadows aren't pure black.
+    // The scene is otherwise sculpted entirely by warm spotlights (film noir
+    // with gold accents).
+    const ambient = new THREE.AmbientLight(0xFFE2C0, 0.12)
     this._scene.add(ambient)
 
-    // Warm key spotlight angled in from the glass wall — casts the light beam
-    const key = new THREE.SpotLight(0xFFE6B0, 1.4, 60, Math.PI / 5, 0.5, 1.2)
-    key.position.set(-6, 9, 6)
-    key.target.position.set(1, 0.5, -1)
-    this._scene.add(key)
-    this._scene.add(key.target)
-    this._keyLight = key
+    const addSpot = (color, intensity, dist, angle, penumbra, px, py, pz, tx, ty, tz) => {
+      const s = new THREE.SpotLight(color, intensity, dist, angle, penumbra, 1.4)
+      s.position.set(px, py, pz)
+      s.target.position.set(tx, ty, tz)
+      this._scene.add(s)
+      this._scene.add(s.target)
+      return s
+    }
 
-    // Soft cool fill from the lobby front so silhouettes read
-    const fill = new THREE.DirectionalLight(0xCFE0FF, 0.35)
-    fill.position.set(4, 6, 10)
-    this._scene.add(fill)
+    // Soft, dim warm key from the glass wall — the broad fill that defines the
+    // beam volume (this is the light the GSAP "golden glow" tween lifts).
+    this._keyLight = addSpot(0xFFE0A8, 0.5, 60, Math.PI / 4.5, 0.7,
+      -6, 9, 6, 1, 0.5, -1)
 
-    // Classroom fill (far set)
-    const classLight = new THREE.PointLight(0xFFEAC0, 0.9, 40)
-    classLight.position.set(CLASS.x, 5, CLASS.z + 3)
-    this._scene.add(classLight)
+    // Dramatic warm spot on the bench area
+    addSpot(0xFFD9A0, 2.4, 30, Math.PI / 7, 0.45,
+      BENCH.x - 0.5, 6.5, BENCH.z + 4.5, BENCH.x, 1.0, BENCH.z)
+
+    // Brighter, warmer key on NOGA specifically — draws the eye to her (Fix 4)
+    this._nogaLight = addSpot(0xFFE8B8, 3.0, 22, Math.PI / 11, 0.4,
+      BENCH.x + 0.2, 5.2, BENCH.z + 2.8, BENCH.x, 1.25, BENCH.z + 0.1)
+
+    // Warm spot on the staircase
+    addSpot(0xFFCF8C, 2.2, 34, Math.PI / 7, 0.5,
+      STAIR.x + 2.5, 7.5, STAIR.z + 3.5, STAIR.x, 1.2, STAIR.z - 2.5)
+
+    // Cool, very faint rim from the lobby front so silhouettes separate from black
+    const rim = new THREE.DirectionalLight(0x6E86B0, 0.14)
+    rim.position.set(3, 5, 12)
+    this._scene.add(rim)
+
+    // Classroom warm key (far set)
+    const classSpot = addSpot(0xFFE0A0, 2.0, 40, Math.PI / 5, 0.5,
+      CLASS.x + 1, 6.5, CLASS.z + 5, CLASS.x - 2, 1.3, CLASS.z + 1)
+    classSpot.target.updateMatrixWorld()
   }
 
   // ── Lobby set ────────────────────────────────────────────────────────────
@@ -245,24 +271,64 @@ export default class SchoolScene {
     side.position.set(8, 4.5, -2)
     this._scene.add(side)
 
-    // Glowing glass-brick wall — instanced grid of emissive bricks on the left
-    const brickGeo = this._track(new THREE.BoxGeometry(0.95, 0.6, 0.3))
-    const cols = 6, rows = 12
-    const bricks = new THREE.InstancedMesh(brickGeo, M.glass, cols * rows)
+    // ── Illuminated glass-brick wall (left) ─────────────────────────────────
+    // Architecture: a warm backing glow plane lights a dense grid of translucent
+    // glass bricks from BEHIND (mortar gaps reveal the inner light), framed by
+    // thin metal mullions. A soft point light spills the glow onto the floor.
+    const cols = 8, rows = 13
+    const wallZ0 = -6.8, wallStepZ = 1.05
+    const wallY0 = 0.5,  wallStepY = 0.62
+    const wallZc = wallZ0 + (cols - 1) * wallStepZ / 2
+    const wallYc = wallY0 + (rows - 1) * wallStepY / 2
+    const wallW = (cols - 1) * wallStepZ + 1.0
+    const wallH = (rows - 1) * wallStepY + 0.9
+
+    // Backing glow plane (pure emissive, unlit) just behind the bricks
+    this._glassGlowMat = new THREE.MeshBasicMaterial({ color: 0xFFE0A0, side: THREE.DoubleSide })
+    this._disposables.push(this._glassGlowMat)
+    const glowPlane = new THREE.Mesh(this._track(new THREE.PlaneGeometry(wallW, wallH)), this._glassGlowMat)
+    glowPlane.rotation.y = Math.PI / 2
+    glowPlane.position.set(-8.22, wallYc, wallZc)
+    this._scene.add(glowPlane)
+
+    // Translucent glass bricks in front of the glow
+    const brickGeo = this._track(new THREE.BoxGeometry(0.92, 0.52, 0.22))
+    const brickMat = new THREE.MeshStandardMaterial({
+      color: 0xBFD8E8, emissive: 0xFFDFA0, emissiveIntensity: 1.7,
+      roughness: 0.3, metalness: 0.1, transparent: true, opacity: 0.82,
+    })
+    this._disposables.push(brickMat)
+    this._glassMat = brickMat   // the golden-glow tween lifts this emissive
+    const bricks = new THREE.InstancedMesh(brickGeo, brickMat, cols * rows)
     const m4 = new THREE.Matrix4()
     let bi = 0
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        const x = -8 + 0.02 // wall plane at x=-8
-        const y = 0.5 + r * 0.65
-        const z = -6.5 + c * 1.05
         m4.makeRotationY(Math.PI / 2)
-        m4.setPosition(x, y, z)
+        m4.setPosition(-8.0, wallY0 + r * wallStepY, wallZ0 + c * wallStepZ)
         bricks.setMatrixAt(bi++, m4)
       }
     }
     bricks.instanceMatrix.needsUpdate = true
     this._scene.add(bricks)
+
+    // Thin metal frame around the glass-brick panel
+    const frameBars = [
+      [0.12, wallH + 0.3, 0.25, -8.0, wallYc, wallZc - wallW / 2], // left edge
+      [0.12, wallH + 0.3, 0.25, -8.0, wallYc, wallZc + wallW / 2], // right edge
+      [0.12, 0.25, wallW + 0.3, -8.0, wallYc - wallH / 2, wallZc], // bottom
+      [0.12, 0.25, wallW + 0.3, -8.0, wallYc + wallH / 2, wallZc], // top
+    ]
+    frameBars.forEach(([w, h, d, x, y, z]) => {
+      const bar = new THREE.Mesh(this._track(new THREE.BoxGeometry(w, h, d)), M.metal)
+      bar.position.set(x, y, z)
+      this._scene.add(bar)
+    })
+
+    // Warm spill from the wall into the lobby
+    const wallSpill = new THREE.PointLight(0xFFDDA0, 0.7, 18, 2)
+    wallSpill.position.set(-6.5, wallYc, wallZc)
+    this._scene.add(wallSpill)
 
     // Metal facade columns
     const colGeo = this._track(new THREE.CylinderGeometry(0.18, 0.18, 9, 12))
@@ -644,10 +710,19 @@ export default class SchoolScene {
     if (this._keyLight) this._keyLight.intensity = intensity
   }
 
-  /** Golden-glow boost (Act 6): lift key light + glass emissive together. */
+  /**
+   * Golden-glow boost (Act 6). boost 0 restores the cinematic baseline; a
+   * positive boost lifts the key light, the wall glow and Noga's highlight
+   * together so the warm light visibly intensifies for the Instagram moment.
+   */
   setGlow(boost) {
-    if (this._keyLight) this._keyLight.intensity = 1.4 + boost
-    if (this._glassMat) this._glassMat.emissiveIntensity = 0.9 + boost * 0.8
+    if (this._keyLight) this._keyLight.intensity = 0.5 + boost * 1.3
+    if (this._nogaLight) this._nogaLight.intensity = 3.0 + boost * 1.6
+    if (this._glassMat) this._glassMat.emissiveIntensity = 1.7 + boost * 1.1
+    if (this._glassGlowMat) {
+      const v = Math.min(1, 0.88 + boost * 0.12)
+      this._glassGlowMat.color.setRGB(v, v * 0.86, v * 0.6)
+    }
   }
 
   // ── Dust (light-beam motes, one draw call) ──────────────────────────────────
