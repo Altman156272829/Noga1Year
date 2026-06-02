@@ -166,7 +166,7 @@ export function buildScene1Sequence({ scene, overlayEl, onBell, onComplete }) {
   turn('noam', 32.0, 0.8, Math.PI * 1.25)
   walk('noam', 32.4, 6.0, 7)
   move('noam', 32.4, 2.6, -5.5, 0, -3.0, 'power1.inOut')   // to stair base
-  move('noam', 35.0, 3.4, -5.5, 2.0, -7.4, 'power1.in')    // climb up & back
+  move('noam', 35.0, 3.6, -5.5, 2.0, -9.0, 'power1.in')    // climb up & into the corridor opening
   camTo(30.1, 8, { px: -1.5, py: 2.2, pz: 2.5, lx: -5.5, ly: 1.6, lz: -5 }, 'power1.inOut')
   // One glance back at Noga before disappearing
   head('noam', 37.4, 0.7, 2.4)

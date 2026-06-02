@@ -268,10 +268,24 @@ export default class SchoolScene {
     floor.rotation.x = -Math.PI / 2
     this._scene.add(floor)
 
-    // Back wall
-    const back = new THREE.Mesh(this._track(new THREE.BoxGeometry(40, 9, 0.4)), M.wall)
-    back.position.set(0, 4.5, -8)
-    this._scene.add(back)
+    // Back wall — built in segments that leave an archway OPENING at the top of
+    // the staircase, so the stairs lead somewhere (up to the next floor) instead
+    // of dead-ending into a solid wall. The corridor itself is built in
+    // _buildStaircase (which runs after this and reads this._stairOpening).
+    const OPEN = { cx: STAIR.x, halfW: 1.9, yBot: 1.9, yTop: 5.4 }
+    this._stairOpening = OPEN
+    const wallSeg = (w, h, x, y) => {
+      if (w <= 0 || h <= 0) return
+      const m = new THREE.Mesh(this._track(new THREE.BoxGeometry(w, h, 0.4)), M.wall)
+      m.position.set(x, y, -8)
+      this._scene.add(m)
+    }
+    const leftEdge = OPEN.cx - OPEN.halfW
+    const rightEdge = OPEN.cx + OPEN.halfW
+    wallSeg(leftEdge - (-20), 9, (-20 + leftEdge) / 2, 4.5)        // left of opening
+    wallSeg(20 - rightEdge, 9, (rightEdge + 20) / 2, 4.5)          // right of opening
+    wallSeg(OPEN.halfW * 2, OPEN.yBot, OPEN.cx, OPEN.yBot / 2)     // below opening
+    wallSeg(OPEN.halfW * 2, 9 - OPEN.yTop, OPEN.cx, (OPEN.yTop + 9) / 2) // lintel above
 
     // Side wall (behind the bench)
     const side = new THREE.Mesh(this._track(new THREE.BoxGeometry(0.4, 9, 24)), M.wall)
@@ -349,13 +363,6 @@ export default class SchoolScene {
     columns.instanceMatrix.needsUpdate = true
     this._scene.add(columns)
 
-    // Auditorium opening (a dark recessed doorway in the back wall)
-    const aud = new THREE.Mesh(this._track(new THREE.BoxGeometry(3.2, 5, 0.2)),
-      new THREE.MeshStandardMaterial({ color: 0x14110c, roughness: 1 }))
-    this._disposables.push(aud.material)
-    aud.position.set(-2, 2.5, -7.75)
-    this._scene.add(aud)
-
     // Bench where Noga sits (seat + backrest + legs)
     this._buildBench(BENCH.x, BENCH.z)
   }
@@ -396,6 +403,50 @@ export default class SchoolScene {
     rail.position.set(STAIR.x + 1.4, 1.4, STAIR.z - 2.4)
     rail.rotation.x = -Math.atan2(steps * 0.25, steps * 0.6)
     this._scene.add(rail)
+
+    // ── Landing + short corridor through the back-wall opening ───────────────
+    // Makes the staircase lead somewhere real — up to the floor with the
+    // classroom — instead of dead-ending at a wall.
+    const O = this._stairOpening
+    const topY = 0.125 + steps * 0.25          // top step surface ≈ 2.0
+    const cw = O.halfW * 2
+
+    // Elevated landing / corridor floor at the stair top, running back (−z)
+    const landing = new THREE.Mesh(this._track(new THREE.BoxGeometry(cw + 0.6, 0.3, 5.4)), M.floor)
+    landing.position.set(O.cx, topY - 0.15, -9.5)
+    this._scene.add(landing)
+
+    // Corridor side walls + ceiling beyond the opening (z < −8)
+    const sideGeo = this._track(new THREE.BoxGeometry(0.3, O.yTop - O.yBot, 4))
+    ;[O.cx - O.halfW, O.cx + O.halfW].forEach((x) => {
+      const w = new THREE.Mesh(sideGeo, M.wall)
+      w.position.set(x, (O.yBot + O.yTop) / 2, -10)
+      this._scene.add(w)
+    })
+    const ceil = new THREE.Mesh(this._track(new THREE.BoxGeometry(cw, 0.3, 4)), M.wall)
+    ceil.position.set(O.cx, O.yTop, -10)
+    this._scene.add(ceil)
+
+    // Bright end of the corridor — warm daylight from the upper floor
+    const endMat = new THREE.MeshBasicMaterial({ color: 0xFFF3DA })
+    this._disposables.push(endMat)
+    const endGlow = new THREE.Mesh(this._track(new THREE.PlaneGeometry(cw, O.yTop - O.yBot)), endMat)
+    endGlow.position.set(O.cx, (O.yBot + O.yTop) / 2, -11.9)
+    this._scene.add(endGlow)
+    const corridorLight = new THREE.PointLight(0xFFEFD0, 0.8, 18, 2)
+    corridorLight.position.set(O.cx, O.yTop - 0.6, -10)
+    this._scene.add(corridorLight)
+
+    // Simple metal archway frame around the opening (posts + lintel, proud of wall)
+    const postGeo = this._track(new THREE.BoxGeometry(0.18, O.yTop - O.yBot + 0.2, 0.5))
+    ;[O.cx - O.halfW, O.cx + O.halfW].forEach((x) => {
+      const p = new THREE.Mesh(postGeo, M.metal)
+      p.position.set(x, (O.yBot + O.yTop) / 2, -7.78)
+      this._scene.add(p)
+    })
+    const lintel = new THREE.Mesh(this._track(new THREE.BoxGeometry(cw + 0.4, 0.25, 0.5)), M.metal)
+    lintel.position.set(O.cx, O.yTop, -7.78)
+    this._scene.add(lintel)
   }
 
   // ── Classroom set (far down +X) ───────────────────────────────────────────
