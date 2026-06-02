@@ -92,7 +92,13 @@ Entry point: faint "touch to begin" prompt on pure black — one tap unlocks Web
 | Font | Cormorant Garamond | Elegant, cinematic serif with great display weights |
 | Audio entry | "Touch to begin" screen | Reliably unlocks Web Audio before typewriter sound is needed in Phase 2 |
 | Mobile perf | WebGL pixelRatio capped at 2 | Maintains 60fps on mid-range phones |
-| Phase state | `ENTRY → PHASE1 → PHASE2 → PHASE3` | Simple string enum in App.jsx; each phase mounts/unmounts independently |
+| Phase state | `ENTRY → PHASE1 → PHASE2 → PHASE3 → CLOSING` | Simple string enum in App.jsx; each phase mounts/unmounts independently |
+| Phase 3 ↔ scenes | App overlay-handoff: timeline stays mounted (tl paused) while the scene plays on top; resume on scene end | Lets the timeline pause at a scene date, run the real scene, then continue from the same point without rebuilding |
+| Phase 3 controllers | Two refs in App: `controllerRef` (front-most, input) + `timelineCtrlRef` (stashed to resume) | The scene's `setController` overwrites the input controller; a separate handle is needed to resume the timeline |
+| Phase 3 scene routing | All 5 dates call `onEnterScene(id)`; id=1 → real `Phase4Scene1`, ids 2–5 → generic `ScenePlaceholder` | Uniform handoff; placeholders swap to real scenes later with no flow changes |
+| Phase 3 particles | Lightweight DOM div dots (Phase-1 shimmer style), GSAP drift | Timeline is otherwise pure DOM; avoids instantiating a whole Three.js scene just for ambient motes |
+| Phase 3 playhead easing | Per-segment `power2.inOut` sweeps | Slow-leave / fast-middle / slow-arrive = "accelerate between events, decelerate into them" |
+| Phase 3 dev-jump | `?phase=3` boots straight into the timeline | Test the timeline + handoffs without replaying Phases 0–2 |
 | Particle shimmer | DOM div dots animated by GSAP | Avoids a second canvas; 18 dots per title card, drift outward on fade-in |
 | Connection lines | Three.js LineSegments, additive blending | Gives a glowing neural-net look; opacity GSAP-tweened on connect |
 | Burst dots | 1000 dots, growing-rectangle starfield, single BufferGeometry + ShaderMaterial | Fills the whole screen (corners included); one draw call keeps 60fps |
@@ -119,7 +125,9 @@ c:\ClaudeCodeProjects\Noga1Year\
 │
 └── src/
     ├── main.jsx                       — ReactDOM.createRoot entry point
-    ├── App.jsx                        — phase state machine (ENTRY→PHASE1→PHASE2→PHASE3)
+    ├── App.jsx                        — phase state machine (ENTRY→PHASE1→PHASE2→PHASE3→CLOSING);
+    │                                    Phase 3 overlay-handoff orchestration (activeScene,
+    │                                    enterScene/exitScene, ?phase=3 + ?scene=1 dev-jumps)
     ├── index.css                      — Tailwind base + cinematic CSS vars (--gold, --font-serif)
     │
     ├── core/
@@ -132,7 +140,11 @@ c:\ClaudeCodeProjects\Noga1Year\
     └── phases/
         ├── EntryScreen.jsx            — Pure black + pulsing "touch to begin"; unlocks audio
         ├── Phase1Opening.jsx          — Two title cards with gold glow + particle shimmer
-        ├── Phase3Transition.jsx       — Skeleton only: "— to be continued —"
+        ├── Phase3Timeline.jsx         — Phase 3 "The Timeline": golden line + sweeping playhead +
+        │                                year/month date counter + DOM particles; one GSAP master
+        │                                timeline that stops on each scene date → onEnterScene(id)
+        ├── ScenePlaceholder.jsx       — Generic title card for the not-yet-built scenes 2–5
+        ├── Phase3Transition.jsx       — CLOSING placeholder: "— to be continued —"
         │
         ├── Phase2Globe/
         │   ├── Phase2Globe.jsx        — Mounts canvas + DOM overlay; wires scene to sequence
@@ -239,9 +251,59 @@ After burst: **2s hold** on the full expanded starfield view. Then `onComplete` 
 
 ---
 
-### Phase 3 — Timeline (not built yet)
+### Phase 3 — The Timeline ✅ BUILT
 
-A cinematic timeline that moves through all 11 events chronologically. Skeleton transition placeholder in place. Full build awaits further instructions.
+A cinematic **passage of time**, not a menu or event list. The user watches time itself move
+between scenes — like a film cutting "3 months later," but lived. Same engine pattern as every
+phase: a single GSAP master timeline wrapped in `PlaybackController` (tap / click / spacebar
+pause-resume). Pure DOM (no canvas). File: `src/phases/Phase3Timeline.jsx`.
+
+**Visual design.** Pure-black background. A single thin **golden horizontal line** at vertical
+center (draws in via `scaleX` on intro). A thin (`2px`) full-viewport-height **golden playhead**
+sweeps left→right, moved with GSAP. Large cinematic serif date — **year above the line, month
+below** (e.g. `2025` / `FEB`), wide letter-spacing, gold glow — counts through the months as the
+playhead moves. No event names/dots/labels on the line itself: just the pure passage of time.
+~26 lightweight **DOM particle dots** drift slowly in the background (Phase-1 shimmer style — no
+second canvas).
+
+**Playhead behavior.** Starts at the left edge (Feb 2025) and moves right toward today. Each
+inter-stop segment is a single `power2.inOut` sweep (slow-leave / fast-middle / slow-arrive) so it
+**accelerates through empty stretches and decelerates to a full stop** on each scene date. On
+arrival the date **pulses** (scale + brightness) and holds ~1.6s. The date label updates on every
+month-cross with a robust opacity pulse (`killTweensOf` on the opacity tween prevents stacking
+during fast sweeps). The start/end dates are computed live (`new Date()`), so the line always
+reaches the current month.
+
+**Scene stops & handoff (overlay architecture).** The 5 full scenes are where the playhead
+STOPS:
+1. **Feb 2025 → Scene 1: The First Meeting** (the real `Phase4Scene1`)
+2. **Mar 2025 → Scene 2: First Date** (placeholder)
+3. **May 2025 → Scene 3: Karting + We Became Official** (placeholder)
+4. **Jun 2025 → Scene 4: First Kiss** (placeholder)
+5. **Jul 2025 → Scene 5: The Sea** (placeholder)
+
+At each stop the master timeline pulses the date, **fades to black** (overlay div tweened on the
+tl), then a `tl.call(() => { tl.pause(); onEnterScene(id) })` beat pauses the timeline and signals
+App. **App** keeps the timeline mounted (paused) and renders the scene **on top**: `id=1` → the
+real `Phase4Scene1`; `ids 2–5` → the generic `ScenePlaceholder` (an elegant `Scene N · Title —
+coming soon` card). The scene registers its own controller (so tap now drives the scene). On the
+scene's `onComplete`, App's `exitScene()` unmounts it, restores input to the timeline, and calls
+`timelineCtrlRef.current.play()` — the timeline's next beat is a **fade-from-black**, and the sweep
+continues. Continuity is seamless: timeline fades to black → scene starts on black → scene ends on
+black → timeline fades from black. *(Scene 1 sits at the very start, index 0, so its "sweep" is
+zero-length — it triggers immediately on arrival at Feb 2025.)*
+
+**Non-scene events** (Mar First Movie · Apr Nahsholim · Apr Sleep Over · Jan 2026 Ice Skating ·
+Feb 2026 Mini Golf) are NOT stops — the playhead just sweeps past while the date keeps counting.
+
+**Final stretch.** After Scene 5 (Jul 2025) the playhead sweeps the long stretch to **today's
+date** (passing Aug 2025 → the current month), decelerates, gives a final pulse + lingering hold,
+then `onComplete()` → **CLOSING** phase (the closing experience is not built yet — `Phase3Transition`
+"— to be continued —" placeholder receives the prepared callback).
+
+**Flow & dev-jumps.** Normal flow now chains `PHASE2 → PHASE3 (timeline) → CLOSING`. `?phase=3`
+boots straight into the timeline; `?scene=1` still boots Scene 1 in isolation (then drops into the
+timeline on completion).
 
 ---
 
@@ -341,10 +403,12 @@ The Sea (Nahsholim). Detailed specs will be provided when we reach each one.
 2. ✅ Phase 0 — Entry screen (touch to begin)
 3. ✅ Phase 1 — Opening sequence (title cards + particles)
 4. ✅ Phase 2 — Globe intro (Three.js memory globe)
-5. ✅ Phase 3 skeleton transition (placeholder)
+5. ✅ Phase 3 skeleton transition (placeholder — repurposed as the CLOSING placeholder)
 6. ✅ Phase 4 — Scene 1 "The First Meeting" (built ahead of Phase 3; reachable via ?scene=1)
-7. Phase 3 — Full timeline (awaiting spec)
-8. Phase 5–8 — The remaining 4 full 3D scenes (awaiting specs)
+7. ✅ Phase 3 — Full timeline (golden line + sweeping playhead + date counter; stops at each scene
+   date and hands off via App overlay; reachable via ?phase=3)
+8. Phase 5–8 — The remaining 4 full 3D scenes (placeholders wired via ScenePlaceholder; awaiting specs)
+9. Closing phase — after the timeline reaches today (callback prepared; not built)
 
 ---
 
@@ -387,3 +451,4 @@ The Sea (Nahsholim). Detailed specs will be provided when we reach each one.
 | 2026-06-01 | Scene 1 visual pass (5 fixes): (1) pure-black clear colour + black fog (was washed-out grey); (2) dramatic film-noir lighting — ambient 0.55→0.12, added warm spots on the bench + staircase + a brighter dedicated Noga spot, dark/warm set surfaces; (3) self-lit (emissive) hair/skin/scrunchie so Noam's light-brown vs Noga's dark-brown hair + white scrunchie always read; (4) bench idle animations (head-bob + body sway, proxy-synced) for Noga + friends in Acts 2–3, Noga warm-highlighted; (5) glass-brick wall now glows from within (emissive backing plane behind translucent bricks + metal frame + spill light). `setGlow` rebaselined to the new lights. `npm run build` passes. |
 | 2026-06-02 | Scene 1 set fixes: (1) removed the auditorium "black rectangle" door entirely; (2) staircase no longer dead-ends — back wall rebuilt in segments to leave an archway opening, with an elevated landing + short bright corridor (side walls, ceiling, warm-lit end panel, archway frame) leading up to the classroom floor. Noam's Act 4 climb extended to walk through the opening. `npm run build` passes. |
 | 2026-06-01 | Scene 1 lighting corrected — it was made too dark (over-applied film-noir). Rebalanced to a BRIGHT, warm spring-morning interior: clear colour/fog → bright warm; ambient 0.12→0.95 + added a HemisphereLight; main key is now a warm DirectionalLight = morning sunlight through the glass wall; soft warm front fill (no silhouettes); glass wall brightened to act as the main daylight source with a stronger floor spill; set surfaces lightened; character emissive reduced (daylight now does the work); Noga spot softened to a gentle wash; classroom set daylit. `setGlow` rebaselined (sun 1.35 / Noga 0.9 / glass 1.45). Dark cinematic style remains only for Phases 1–2. `npm run build` passes. |
+| 2026-06-02 | Phase 3 "The Timeline" built: Phase3Timeline.jsx (pure-DOM cinematic passage of time — golden horizontal line + thin sweeping playhead + year-above/month-below serif date counter + ~26 drifting DOM particles; one GSAP master timeline with the cursor+anchor pattern; per-segment power2.inOut sweeps that decelerate to a full stop on each scene date, pulse, fade to black, and call onEnterScene(id); final stretch sweeps to today's live date → onComplete). ScenePlaceholder.jsx (generic "Scene N · Title — coming soon" card for the unbuilt scenes 2–5). App.jsx rewired: PHASE2→PHASE3→CLOSING flow, overlay-handoff orchestration (activeScene + timelineCtrlRef, enterScene/exitScene; timeline stays mounted/paused while the scene plays on top, id=1→Phase4Scene1, ids 2–5→ScenePlaceholder), CLOSING renders Phase3Transition, ?phase=3 dev-jump added. `npm run build` passes. |
